@@ -2,6 +2,7 @@
 
 mod i18n;
 mod state;
+mod theme;
 mod ui;
 
 use bevy::camera::visibility::RenderLayers;

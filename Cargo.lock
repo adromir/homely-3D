@@ -3476,6 +3476,7 @@ dependencies = [
  "egui_dock",
  "homely-core",
  "homely-viewer3d",
+ "image",
  "rfd",
 ]
 

@@ -5,10 +5,11 @@ use crate::state::{
     corner, BuildingDragState, ContextMenuKind, ContextMenuState, DragAnchorState, DragHandleKind,
     EditorState, ProjectDialogState,
 };
+use crate::theme::{self, apply_native_theme, dock_style, load_logo_texture};
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use homely_core::command::ProjectCommand;
 use homely_core::geometry::{
     compute_level_wall_offsets, project_point_onto_polyline_t, sample_polyline_at_t,
@@ -79,8 +80,15 @@ pub fn draw_dock_ui(
     mut editor: ResMut<EditorState>,
     mut dock: ResMut<DockLayout>,
     mut app_exit: MessageWriter<AppExit>,
+    mut theme_applied: Local<bool>,
+    mut logo_tex: Local<Option<egui::TextureHandle>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    if !*theme_applied {
+        apply_native_theme(ctx);
+        *logo_tex = Some(load_logo_texture(ctx));
+        *theme_applied = true;
+    }
     let s = tr(editor.lang);
 
     let wants_kbd = ctx.egui_wants_keyboard_input();
@@ -120,15 +128,29 @@ pub fn draw_dock_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    // Classic flat top menu bar
+    // Classic flat top menu bar with embedded Homely 3D logo
     egui::Panel::top("menu_bar")
         .frame(
             egui::Frame::NONE
-                .fill(egui::Color32::from_rgb(32, 35, 42))
-                .inner_margin(egui::Margin::symmetric(8, 3)),
+                .fill(theme::BG_CANVAS)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::symmetric(10, 4)),
         )
         .show(&mut root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                if let Some(tex) = logo_tex.as_ref() {
+                    ui.image((tex.id(), egui::vec2(20.0, 20.0)));
+                    ui.add_space(4.0);
+                }
+                ui.label(
+                    egui::RichText::new("Homely 3D")
+                        .strong()
+                        .size(13.0)
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
                 ui.menu_button(s.menu_file, |ui| {
                     if ui.button(format!("{}...", s.menu_new)).clicked() {
                         editor.project_dialog = Some(ProjectDialogState {
@@ -245,12 +267,22 @@ pub fn draw_dock_ui(
             });
         });
 
-    // Left Tool Palette (no Undo/Redo buttons; focused on point/wall actions & modifier hints)
+    // Left Tool Palette (slim native rail with vector icons & catalog)
     egui::Panel::left("left_tools")
-        .exact_size(156.0)
+        .exact_size(172.0)
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::symmetric(8, 8)),
+        )
         .show(&mut root_ui, |ui| {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(s.tools).strong().size(13.0));
+            ui.label(
+                egui::RichText::new(s.tools)
+                    .strong()
+                    .size(12.0)
+                    .color(theme::TEXT_MUTED),
+            );
             ui.add_space(4.0);
 
             let can_delete_point =
@@ -274,11 +306,16 @@ pub fn draw_dock_ui(
 
             ui.add_space(10.0);
             ui.separator();
-            ui.label(egui::RichText::new(s.catalog_title).strong().size(13.0));
+            ui.label(
+                egui::RichText::new(s.catalog_title)
+                    .strong()
+                    .size(12.0)
+                    .color(theme::TEXT_MUTED),
+            );
             ui.label(
                 egui::RichText::new(s.catalog_hint)
                     .size(10.5)
-                    .color(egui::Color32::from_gray(155)),
+                    .color(theme::TEXT_MUTED),
             );
             ui.add_space(4.0);
             let catalog_items = editor.catalog.clone();
@@ -288,41 +325,38 @@ pub fn draw_dock_ui(
                     Lang::En => &item.name_en,
                 };
                 let (rect, resp) = ui.allocate_exact_size(
-                    egui::vec2(140.0, 26.0),
+                    egui::vec2(154.0, 28.0),
                     egui::Sense::click_and_drag(),
                 );
                 if ui.is_rect_visible(rect) {
                     let hovered = resp.hovered();
                     let fill = if hovered {
-                        egui::Color32::from_rgb(54, 62, 74)
+                        theme::BG_HOVER
                     } else {
-                        egui::Color32::from_rgb(38, 42, 50)
+                        theme::BG_ELEVATED
                     };
-                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 68, 80));
-                    ui.painter().rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
-                    let tag = match item.category {
-                        CatalogCategory::Door => "D",
-                        CatalogCategory::Window => "W",
-                        CatalogCategory::Furniture => "F",
-                    };
-                    let tag_col = match item.category {
-                        CatalogCategory::Door => egui::Color32::from_rgb(235, 175, 95),
-                        CatalogCategory::Window => egui::Color32::from_rgb(135, 205, 250),
-                        CatalogCategory::Furniture => egui::Color32::from_rgb(160, 220, 150),
-                    };
-                    ui.painter().text(
-                        egui::pos2(rect.left() + 8.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        tag,
-                        egui::FontId::monospace(11.5),
-                        tag_col,
+                    let stroke = egui::Stroke::new(
+                        1.0,
+                        if hovered {
+                            theme::ACCENT_BLUE
+                        } else {
+                            theme::BORDER_SUBTLE
+                        },
                     );
+                    ui.painter().rect(rect, 5.0, fill, stroke, egui::StrokeKind::Inside);
+
+                    let icon_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + 7.0, rect.center().y - 8.0),
+                        egui::vec2(16.0, 16.0),
+                    );
+                    draw_catalog_icon(ui.painter(), icon_rect, &item);
+
                     ui.painter().text(
-                        egui::pos2(rect.left() + 24.0, rect.center().y),
+                        egui::pos2(icon_rect.right() + 7.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         label,
                         egui::FontId::proportional(11.5),
-                        egui::Color32::from_gray(230),
+                        theme::TEXT_PRIMARY,
                     );
                 }
                 if resp.drag_started() {
@@ -339,11 +373,22 @@ pub fn draw_dock_ui(
             );
         });
 
-    egui::Panel::bottom("status_bar").show(&mut root_ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(&editor.status);
+    egui::Panel::bottom("status_bar")
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_CANVAS)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::symmetric(10, 3)),
+        )
+        .show(&mut root_ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&editor.status)
+                        .size(11.5)
+                        .color(theme::TEXT_MUTED),
+                );
+            });
         });
-    });
 
     egui::CentralPanel::no_frame().show(&mut root_ui, |ui| {
         let mut viewer = HomelyTabViewer {
@@ -351,7 +396,7 @@ pub fn draw_dock_ui(
         };
         DockArea::new(&mut dock.state)
             .show_close_buttons(false)
-            .style(Style::from_egui(ui.style().as_ref()))
+            .style(dock_style(ui.style().as_ref()))
             .show_inside(ui, &mut viewer);
     });
 
@@ -1783,7 +1828,7 @@ fn tool_button(
     active: bool,
     enabled: bool,
 ) -> egui::Response {
-    let desired_size = egui::vec2(140.0, 32.0);
+    let desired_size = egui::vec2(154.0, 30.0);
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -1856,6 +1901,41 @@ fn draw_vector_icon(p: &egui::Painter, r: egui::Rect, icon: ToolIcon, color: egu
         ToolIcon::Cross => {
             p.line_segment([pt(0.22, 0.22), pt(0.78, 0.78)], s);
             p.line_segment([pt(0.78, 0.22), pt(0.22, 0.78)], s);
+        }
+    }
+}
+
+fn draw_catalog_icon(p: &egui::Painter, r: egui::Rect, item: &CatalogItem) {
+    let pt = |nx: f32, ny: f32| egui::pos2(r.left() + r.width() * nx, r.top() + r.height() * ny);
+    match item.category {
+        CatalogCategory::Door => {
+            let s = egui::Stroke::new(1.5, theme::ACCENT_AMBER);
+            p.line_segment([pt(0.15, 0.82), pt(0.15, 0.20)], s);
+            p.line_segment([pt(0.15, 0.20), pt(0.75, 0.40)], s);
+            p.line_segment([pt(0.15, 0.82), pt(0.85, 0.82)], egui::Stroke::new(1.0, theme::TEXT_MUTED));
+            if item.id.contains("double") {
+                p.line_segment([pt(0.85, 0.82), pt(0.85, 0.28)], s);
+            }
+        }
+        CatalogCategory::Window => {
+            let s = egui::Stroke::new(1.5, theme::ACCENT_BLUE);
+            p.rect_stroke(
+                egui::Rect::from_min_max(pt(0.12, 0.20), pt(0.88, 0.80)),
+                1.5,
+                s,
+                egui::StrokeKind::Inside,
+            );
+            p.line_segment([pt(0.50, 0.20), pt(0.50, 0.80)], egui::Stroke::new(1.1, theme::ACCENT_BLUE));
+            p.line_segment([pt(0.12, 0.50), pt(0.88, 0.50)], egui::Stroke::new(1.1, theme::ACCENT_BLUE));
+        }
+        CatalogCategory::Furniture => {
+            let s = egui::Stroke::new(1.5, egui::Color32::from_rgb(160, 220, 150));
+            p.rect_stroke(
+                egui::Rect::from_min_max(pt(0.18, 0.25), pt(0.82, 0.78)),
+                2.0,
+                s,
+                egui::StrokeKind::Inside,
+            );
         }
     }
 }
