@@ -6,9 +6,12 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowCloseRequested, WindowRef, WindowResolution};
-use homely_core::geometry::{compute_level_wall_offsets, Vec2 as CoreVec2};
+use homely_core::geometry::{
+    compute_level_wall_offsets, polyline_length, sample_polyline_at_t, slice_offset_pairs,
+    tessellate_wall_centerline, Vec2 as CoreVec2,
+};
 use homely_core::rooms::{detect_rooms, triangulate_polygon};
-use homely_core::Project;
+use homely_core::{Opening, OpeningType, Project};
 
 /// Bevy plugin that spawns the `Homely 3D — 3D Viewer` window and keeps 3D geometry in sync.
 pub struct Viewer3dPlugin;
@@ -153,6 +156,17 @@ fn rebuild_3d_scene(
         perceptual_roughness: 0.75,
         ..default()
     });
+    let door_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.52, 0.34, 0.20),
+        perceptual_roughness: 0.65,
+        ..default()
+    });
+    let glass_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.55, 0.80, 0.95, 0.42),
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 0.15,
+        ..default()
+    });
 
     for level in &state.project.levels {
         let level_walls: Vec<_> = state
@@ -209,13 +223,113 @@ fn rebuild_3d_scene(
 
             let y_bot = level_elev;
             let y_top = level_elev + ((wall.start_height + wall.end_height) * 0.5) as f32;
-            if let Some(mesh) = build_mitered_wall_mesh(pairs, y_bot, y_top, wall.is_closed_loop) {
-                commands.spawn((
-                    SceneMesh3d,
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(mat),
-                    Transform::IDENTITY,
-                ));
+            let centerline = tessellate_wall_centerline(wall, 0.02);
+            let total_len = polyline_length(&centerline);
+
+            let mut wall_openings: Vec<&Opening> = state
+                .project
+                .openings
+                .iter()
+                .filter(|o| o.wall_id == wall.id)
+                .collect();
+
+            if wall_openings.is_empty() || total_len < 1e-4 {
+                if let Some(mesh) = build_mitered_wall_mesh(pairs, y_bot, y_top, wall.is_closed_loop) {
+                    commands.spawn((
+                        SceneMesh3d,
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(mat),
+                        Transform::IDENTITY,
+                    ));
+                }
+                continue;
+            }
+
+            // Compute normalized [t0, t1] spans for each opening and sort left-to-right
+            wall_openings.sort_by(|a, b| a.segment_t.total_cmp(&b.segment_t));
+            let mut cursor_t = 0.0_f64;
+
+            for op in wall_openings {
+                let half_t = (op.width * 0.5 / total_len).clamp(0.01, 0.49);
+                let t0 = (op.segment_t - half_t).clamp(cursor_t, 1.0);
+                let t1 = (op.segment_t + half_t).clamp(t0, 1.0);
+
+                // Solid wall before opening
+                if t0 - cursor_t > 1e-4 {
+                    let sub_pairs = slice_offset_pairs(&centerline, pairs, cursor_t, t0);
+                    if let Some(mesh) = build_mitered_wall_mesh(&sub_pairs, y_bot, y_top, false) {
+                        commands.spawn((
+                            SceneMesh3d,
+                            Mesh3d(meshes.add(mesh)),
+                            MeshMaterial3d(mat.clone()),
+                            Transform::IDENTITY,
+                        ));
+                    }
+                }
+
+                // Sill below opening + Lintel above opening
+                if t1 - t0 > 1e-4 {
+                    let op_pairs = slice_offset_pairs(&centerline, pairs, t0, t1);
+                    let op_bot = (y_bot + op.elevation as f32).clamp(y_bot, y_top);
+                    let op_top = (op_bot + op.height as f32).clamp(op_bot, y_top);
+
+                    if op_bot - y_bot > 0.01 {
+                        if let Some(mesh) = build_mitered_wall_mesh(&op_pairs, y_bot, op_bot, false) {
+                            commands.spawn((
+                                SceneMesh3d,
+                                Mesh3d(meshes.add(mesh)),
+                                MeshMaterial3d(mat.clone()),
+                                Transform::IDENTITY,
+                            ));
+                        }
+                    }
+                    if y_top - op_top > 0.01 {
+                        if let Some(mesh) = build_mitered_wall_mesh(&op_pairs, op_top, y_top, false) {
+                            commands.spawn((
+                                SceneMesh3d,
+                                Mesh3d(meshes.add(mesh)),
+                                MeshMaterial3d(mat.clone()),
+                                Transform::IDENTITY,
+                            ));
+                        }
+                    }
+
+                    // Door leaf or Window glass pane inside opening
+                    if let Some((mid, dir)) = sample_polyline_at_t(&centerline, (t0 + t1) * 0.5) {
+                        let op_h = (op_top - op_bot).max(0.05);
+                        let op_w = ((t1 - t0) * total_len) as f32;
+                        let angle = -(dir.y as f32).atan2(dir.x as f32);
+                        let (pane_mat, pane_thick) = match op.opening_type {
+                            OpeningType::Door => (door_mat.clone(), 0.05_f32),
+                            OpeningType::Window => (glass_mat.clone(), 0.03_f32),
+                            OpeningType::Cutout => (glass_mat.clone(), 0.0_f32),
+                        };
+                        if pane_thick > 0.0 {
+                            commands.spawn((
+                                SceneMesh3d,
+                                Mesh3d(meshes.add(Cuboid::new(op_w, op_h, pane_thick))),
+                                MeshMaterial3d(pane_mat),
+                                Transform::from_xyz(mid.x as f32, op_bot + op_h * 0.5, mid.y as f32)
+                                    .with_rotation(Quat::from_rotation_y(angle)),
+                            ));
+                        }
+                    }
+                }
+
+                cursor_t = t1;
+            }
+
+            // Solid wall after last opening
+            if 1.0 - cursor_t > 1e-4 {
+                let tail_pairs = slice_offset_pairs(&centerline, pairs, cursor_t, 1.0);
+                if let Some(mesh) = build_mitered_wall_mesh(&tail_pairs, y_bot, y_top, false) {
+                    commands.spawn((
+                        SceneMesh3d,
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(mat),
+                        Transform::IDENTITY,
+                    ));
+                }
             }
         }
     }

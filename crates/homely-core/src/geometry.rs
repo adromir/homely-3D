@@ -156,6 +156,125 @@ fn is_flat(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, tol: f64) -> bool {
     d1 <= tol && d2 <= tol
 }
 
+/// Computes the total arc length of a 2D polyline.
+pub fn polyline_length(pts: &[Vec2]) -> f64 {
+    pts.windows(2).map(|w| w[1].sub(w[0]).len()).sum()
+}
+
+/// Evaluates position and unit tangent direction at normalized parameter `t` in `[0, 1]` along `pts`.
+pub fn sample_polyline_at_t(pts: &[Vec2], t: f64) -> Option<(Vec2, Vec2)> {
+    if pts.len() < 2 {
+        return None;
+    }
+    let total = polyline_length(pts);
+    if total < 1e-9 {
+        return None;
+    }
+    let target = t.clamp(0.0, 1.0) * total;
+    let mut acc = 0.0;
+    for win in pts.windows(2) {
+        let seg = win[1].sub(win[0]);
+        let seg_len = seg.len();
+        if acc + seg_len >= target || seg_len < 1e-9 {
+            let local_t = if seg_len > 1e-9 {
+                ((target - acc) / seg_len).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let pos = win[0].add(seg.scale(local_t));
+            let dir = seg.normalized().unwrap_or(Vec2::new(1.0, 0.0));
+            return Some((pos, dir));
+        }
+        acc += seg_len;
+    }
+    let last = pts[pts.len() - 1];
+    let prev = pts[pts.len() - 2];
+    Some((last, last.sub(prev).normalized().unwrap_or(Vec2::new(1.0, 0.0))))
+}
+
+/// Projects `(wx, wy)` onto `pts` and returns the closest normalized parameter `t` in `[0, 1]`.
+pub fn project_point_onto_polyline_t(pts: &[Vec2], wx: f64, wy: f64) -> f64 {
+    let total = polyline_length(pts);
+    if total < 1e-9 || pts.len() < 2 {
+        return 0.5;
+    }
+    let target = Vec2::new(wx, wy);
+    let mut acc = 0.0;
+    let mut best_dist = f64::MAX;
+    let mut best_s = total * 0.5;
+
+    for win in pts.windows(2) {
+        let seg = win[1].sub(win[0]);
+        let len_sq = seg.dot(seg);
+        let seg_len = len_sq.sqrt();
+        if seg_len > 1e-9 {
+            let u = (target.sub(win[0]).dot(seg) / len_sq).clamp(0.0, 1.0);
+            let proj = win[0].add(seg.scale(u));
+            let d = target.sub(proj).len();
+            if d < best_dist {
+                best_dist = d;
+                best_s = acc + u * seg_len;
+            }
+        }
+        acc += seg_len;
+    }
+    (best_s / total).clamp(0.05, 0.95)
+}
+
+/// Splits a `(left, right)` offset polyline at normalized arc-length `cut_t` in `(0, 1)`.
+pub fn slice_offset_pairs(
+    centerline: &[Vec2],
+    pairs: &[(Vec2, Vec2)],
+    t_start: f64,
+    t_end: f64,
+) -> Vec<(Vec2, Vec2)> {
+    if centerline.len() != pairs.len() || centerline.len() < 2 || t_end <= t_start {
+        return Vec::new();
+    }
+    let total = polyline_length(centerline);
+    if total < 1e-9 {
+        return Vec::new();
+    }
+    let s0 = t_start.clamp(0.0, 1.0) * total;
+    let s1 = t_end.clamp(0.0, 1.0) * total;
+    if s1 - s0 < 1e-4 {
+        return Vec::new();
+    }
+
+    let mut cum = Vec::with_capacity(centerline.len());
+    cum.push(0.0);
+    for win in centerline.windows(2) {
+        cum.push(cum.last().copied().unwrap() + win[1].sub(win[0]).len());
+    }
+
+    let interp_pair = |s: f64| -> (Vec2, Vec2) {
+        for i in 0..centerline.len() - 1 {
+            let a = cum[i];
+            let b = cum[i + 1];
+            if s <= b + 1e-9 || i + 2 == centerline.len() {
+                let u = if b - a > 1e-9 {
+                    ((s - a) / (b - a)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let l = pairs[i].0.add(pairs[i + 1].0.sub(pairs[i].0).scale(u));
+                let r = pairs[i].1.add(pairs[i + 1].1.sub(pairs[i].1).scale(u));
+                return (l, r);
+            }
+        }
+        pairs[pairs.len() - 1]
+    };
+
+    let mut out = vec![interp_pair(s0)];
+    for i in 0..centerline.len() {
+        if cum[i] > s0 + 1e-6 && cum[i] < s1 - 1e-6 {
+            out.push(pairs[i]);
+        }
+    }
+    out.push(interp_pair(s1));
+    out
+}
+
 /// Computes mitered `(left, right)` offset pairs for every wall in `walls`,
 /// taking neighboring walls that meet at shared endpoints into account so
 /// 2-point walls form seamless corners at any angle.

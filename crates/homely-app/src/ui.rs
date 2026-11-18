@@ -9,10 +9,13 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use homely_core::command::ProjectCommand;
-use homely_core::geometry::{compute_level_wall_offsets, tessellate_wall_centerline};
+use homely_core::geometry::{
+    compute_level_wall_offsets, project_point_onto_polyline_t, sample_polyline_at_t,
+    tessellate_wall_centerline,
+};
 use homely_core::rooms::{detect_rooms, triangulate_polygon};
 use homely_core::sh3x::{load_sh3x, save_sh3x};
-use homely_core::{PointType, Wall, WallAnchorPoint};
+use homely_core::{Opening, OpeningType, PointType, Wall, WallAnchorPoint};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +95,12 @@ pub fn draw_dock_ui(
     } else if redo_key {
         editor.redo();
     } else if delete_key {
-        delete_selected_point(&mut editor);
+        if let Some(op_id) = editor.selected_opening_id.clone() {
+            editor.execute_cmd(ProjectCommand::RemoveOpening { opening_id: op_id });
+            editor.status = "Removed opening.".into();
+        } else {
+            delete_selected_point(&mut editor);
+        }
     } else if esc_key {
         editor.active_draw_from = None;
         editor.context_menu = None;
@@ -451,6 +459,84 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
                 painter.circle_stroke(ap, 9.5, egui::Stroke::new(2.0, egui::Color32::WHITE));
             }
         }
+
+        // Draw doors and windows on this wall
+        let line = tessellate_wall_centerline(wall, 0.02);
+        for op in editor.project.openings.iter().filter(|o| o.wall_id == wall.id) {
+            let Some((mid, dir)) = sample_polyline_at_t(&line, op.segment_t) else {
+                continue;
+            };
+            let is_op_sel = editor.selected_opening_id.as_deref() == Some(&op.id);
+            let perp = homely_core::geometry::Vec2::new(-dir.y, dir.x);
+            let hw = op.width * 0.5;
+            let ht = wall.thickness * 0.5 + 0.02;
+
+            let p_a = homely_core::geometry::Vec2::new(mid.x - dir.x * hw, mid.y - dir.y * hw);
+            let p_b = homely_core::geometry::Vec2::new(mid.x + dir.x * hw, mid.y + dir.y * hw);
+
+            // Clear wall interior behind opening
+            let gap_quad = vec![
+                world_to_screen(p_a.x + perp.x * ht, p_a.y + perp.y * ht),
+                world_to_screen(p_b.x + perp.x * ht, p_b.y + perp.y * ht),
+                world_to_screen(p_b.x - perp.x * ht, p_b.y - perp.y * ht),
+                world_to_screen(p_a.x - perp.x * ht, p_a.y - perp.y * ht),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                gap_quad,
+                egui::Color32::from_rgb(28, 32, 38),
+                egui::Stroke::NONE,
+            ));
+
+            let accent = if is_op_sel {
+                egui::Color32::from_rgb(80, 210, 255)
+            } else if op.opening_type == OpeningType::Door {
+                egui::Color32::from_rgb(235, 175, 95)
+            } else {
+                egui::Color32::from_rgb(135, 205, 250)
+            };
+
+            match op.opening_type {
+                OpeningType::Door => {
+                    // Door leaf + quarter-circle swing arc
+                    let hinge = world_to_screen(p_a.x, p_a.y);
+                    let swing_tip = world_to_screen(p_a.x + perp.x * op.width, p_a.y + perp.y * op.width);
+                    painter.line_segment([hinge, swing_tip], egui::Stroke::new(2.2, accent));
+
+                    let mut arc_pts = Vec::with_capacity(13);
+                    for step in 0..=12 {
+                        let ang = (step as f64 / 12.0) * std::f64::consts::FRAC_PI_2;
+                        let vx = dir.x * ang.cos() + perp.x * ang.sin();
+                        let vy = dir.y * ang.cos() + perp.y * ang.sin();
+                        arc_pts.push(world_to_screen(
+                            p_a.x + vx * op.width,
+                            p_a.y + vy * op.width,
+                        ));
+                    }
+                    painter.add(egui::Shape::line(
+                        arc_pts,
+                        egui::Stroke::new(1.2, accent),
+                    ));
+                }
+                OpeningType::Window | OpeningType::Cutout => {
+                    // Double glass line inside wall opening
+                    let off = wall.thickness * 0.2;
+                    painter.line_segment(
+                        [
+                            world_to_screen(p_a.x + perp.x * off, p_a.y + perp.y * off),
+                            world_to_screen(p_b.x + perp.x * off, p_b.y + perp.y * off),
+                        ],
+                        egui::Stroke::new(1.8, accent),
+                    );
+                    painter.line_segment(
+                        [
+                            world_to_screen(p_a.x - perp.x * off, p_a.y - perp.y * off),
+                            world_to_screen(p_b.x - perp.x * off, p_b.y - perp.y * off),
+                        ],
+                        egui::Stroke::new(1.8, accent),
+                    );
+                }
+            }
+        }
     }
 
     let pointer_pos = response.hover_pos().filter(|p| canvas_rect.contains(*p));
@@ -539,9 +625,19 @@ fn handle_2d_input(
                 return;
             }
             let (wx, wy) = screen_to_world(pos);
+            if let Some(op_id) = find_opening_at_world(wx, wy, editor) {
+                editor.selected_opening_id = Some(op_id.clone());
+                editor.selected_anchor_index = None;
+                editor.context_menu = Some(ContextMenuState {
+                    screen_pos: pos,
+                    kind: ContextMenuKind::Opening { opening_id: op_id },
+                });
+                return;
+            }
             if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
                 editor.selected_wall_id = Some(wid.clone());
                 editor.selected_anchor_index = None;
+                editor.selected_opening_id = None;
                 editor.context_menu = Some(ContextMenuState {
                     screen_pos: pos,
                     kind: ContextMenuKind::Wall {
@@ -628,9 +724,14 @@ fn handle_2d_input(
 
             if started_drag.is_none() {
                 let (wx, wy) = screen_to_world(pos);
-                if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
+                if let Some(op_id) = find_opening_at_world(wx, wy, editor) {
+                    editor.selected_opening_id = Some(op_id.clone());
+                    editor.selected_anchor_index = None;
+                    editor.status = format!("Selected opening {op_id}.");
+                } else if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
                     editor.selected_wall_id = Some(wid.clone());
                     editor.selected_anchor_index = None;
+                    editor.selected_opening_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
                 }
@@ -942,8 +1043,25 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                             wx,
                             wy,
                         } => {
-                            let w = measure_menu_width(ctx, &[s.ctx_insert_point, s.ctx_delete_wall]);
+                            let w = measure_menu_width(
+                                ctx,
+                                &[
+                                    s.ctx_insert_door,
+                                    s.ctx_insert_window,
+                                    s.ctx_insert_point,
+                                    s.ctx_delete_wall,
+                                ],
+                            );
                             ui.set_width(w);
+                            if context_menu_item(ui, s.ctx_insert_door, w) {
+                                insert_opening_at(editor, wall_id, wx, wy, OpeningType::Door);
+                                close_menu = true;
+                            }
+                            if context_menu_item(ui, s.ctx_insert_window, w) {
+                                insert_opening_at(editor, wall_id, wx, wy, OpeningType::Window);
+                                close_menu = true;
+                            }
+                            ui.separator();
                             if context_menu_item(ui, s.ctx_insert_point, w) {
                                 let sx = snap_10cm(wx).clamp(0.0, editor.plan_width);
                                 let sy = snap_10cm(wy).clamp(0.0, editor.plan_height);
@@ -953,6 +1071,16 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                             if context_menu_item(ui, s.ctx_delete_wall, w) {
                                 editor.execute_cmd(ProjectCommand::RemoveWall {
                                     wall_id: wall_id.clone(),
+                                });
+                                close_menu = true;
+                            }
+                        }
+                        ContextMenuKind::Opening { ref opening_id } => {
+                            let w = measure_menu_width(ctx, &[s.ctx_delete_opening]);
+                            ui.set_width(w);
+                            if context_menu_item(ui, s.ctx_delete_opening, w) {
+                                editor.execute_cmd(ProjectCommand::RemoveOpening {
+                                    opening_id: opening_id.clone(),
                                 });
                                 close_menu = true;
                             }
@@ -1086,6 +1214,61 @@ fn collect_linked_anchors(
         }
     }
     linked
+}
+
+fn insert_opening_at(
+    editor: &mut EditorState,
+    wall_id: &str,
+    wx: f64,
+    wy: f64,
+    kind: OpeningType,
+) {
+    let Some(wall) = editor.project.walls.iter().find(|w| w.id == wall_id).cloned() else {
+        return;
+    };
+    let line = tessellate_wall_centerline(&wall, 0.02);
+    let t = project_point_onto_polyline_t(&line, wx, wy);
+    let (width, height, elevation) = match kind {
+        OpeningType::Door => (0.90, 2.10, 0.0),
+        OpeningType::Window => (1.20, 1.30, 0.90),
+        OpeningType::Cutout => (1.00, 2.00, 0.0),
+    };
+    let op_id = editor.alloc_id("op");
+    let opening = Opening {
+        id: op_id.clone(),
+        wall_id: wall_id.to_string(),
+        opening_type: kind,
+        segment_index: 0,
+        segment_t: t,
+        elevation,
+        width,
+        height,
+        depth: wall.thickness,
+        ha_entity_id: None,
+    };
+    editor.execute_cmd(ProjectCommand::AddOpening(opening));
+    editor.selected_opening_id = Some(op_id);
+    editor.status = format!("Added {:?} on {wall_id}.", kind);
+}
+
+fn find_opening_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<String> {
+    for op in &editor.project.openings {
+        let Some(wall) = editor.project.walls.iter().find(|w| w.id == op.wall_id) else {
+            continue;
+        };
+        if wall.level_id != editor.active_level_id {
+            continue;
+        }
+        let line = tessellate_wall_centerline(wall, 0.02);
+        let Some((mid, _)) = sample_polyline_at_t(&line, op.segment_t) else {
+            continue;
+        };
+        let d = ((wx - mid.x).powi(2) + (wy - mid.y).powi(2)).sqrt();
+        if d <= (op.width * 0.5).max(0.35) {
+            return Some(op.id.clone());
+        }
+    }
+    None
 }
 
 fn find_wall_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<(String, f64)> {
@@ -1586,6 +1769,51 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                     anchor_index: idx,
                     anchor,
                 });
+            }
+        }
+    }
+
+    if let Some(op_id) = editor.selected_opening_id.clone() {
+        if let Some(op) = editor.project.openings.iter().find(|o| o.id == op_id).cloned() {
+            ui.separator();
+            let kind_label = match op.opening_type {
+                OpeningType::Door => s.opening_door,
+                OpeningType::Window => s.opening_window,
+                OpeningType::Cutout => "Cutout",
+            };
+            ui.heading(format!("{kind_label} ({})", op.id));
+
+            let mut edited = op.clone();
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.opening_width));
+                changed |= ui
+                    .add(egui::DragValue::new(&mut edited.width).speed(0.05).range(0.3..=4.0).suffix(" m"))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.height));
+                changed |= ui
+                    .add(egui::DragValue::new(&mut edited.height).speed(0.05).range(0.3..=3.5).suffix(" m"))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.opening_elevation));
+                changed |= ui
+                    .add(egui::DragValue::new(&mut edited.elevation).speed(0.05).range(0.0..=2.5).suffix(" m"))
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.opening_pos));
+                changed |= ui
+                    .add(egui::DragValue::new(&mut edited.segment_t).speed(0.01).range(0.05..=0.95))
+                    .changed();
+            });
+            if changed {
+                editor.execute_cmd(ProjectCommand::UpdateOpening(edited));
+            }
+            if ui.button(s.ctx_delete_opening).clicked() {
+                editor.execute_cmd(ProjectCommand::RemoveOpening { opening_id: op_id });
             }
         }
     }

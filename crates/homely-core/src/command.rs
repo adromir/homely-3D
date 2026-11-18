@@ -36,6 +36,7 @@ pub enum ProjectCommand {
         is_closed_loop: bool,
     },
     AddOpening(Opening),
+    UpdateOpening(Opening),
     RemoveOpening {
         opening_id: String,
     },
@@ -70,6 +71,7 @@ impl ProjectCommand {
             } => format!("Remove {wall_id} #{anchor_index}"),
             Self::UpdateWallProperties { wall_id, .. } => format!("Edit Wall {wall_id}"),
             Self::AddOpening(o) => format!("Add Opening {}", o.id),
+            Self::UpdateOpening(o) => format!("Edit Opening {}", o.id),
             Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
             Self::PlaceFurniture(f) => format!("Place {}", f.catalog_item_id),
             Self::RemoveFurniture { item_id } => format!("Remove {item_id}"),
@@ -220,6 +222,18 @@ impl ProjectCommand {
                 Ok(Self::RemoveOpening {
                     opening_id: opening.id.clone(),
                 })
+            }
+            Self::UpdateOpening(opening) => {
+                let slot = project
+                    .openings
+                    .iter_mut()
+                    .find(|o| o.id == opening.id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "opening",
+                        id: opening.id.clone(),
+                    })?;
+                let previous = std::mem::replace(slot, opening.clone());
+                Ok(Self::UpdateOpening(previous))
             }
             Self::RemoveOpening { opening_id } => {
                 let idx = find_index(&project.openings, opening_id, |o| &o.id, "opening")?;

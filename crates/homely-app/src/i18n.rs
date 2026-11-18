@@ -57,7 +57,15 @@ pub struct Strings {
     pub ctx_continue_wall: &'static str,
     pub ctx_delete_point: &'static str,
     pub ctx_insert_point: &'static str,
+    pub ctx_insert_door: &'static str,
+    pub ctx_insert_window: &'static str,
     pub ctx_delete_wall: &'static str,
+    pub ctx_delete_opening: &'static str,
+    pub opening_door: &'static str,
+    pub opening_window: &'static str,
+    pub opening_width: &'static str,
+    pub opening_elevation: &'static str,
+    pub opening_pos: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -109,7 +117,15 @@ static DE: Strings = Strings {
     ctx_continue_wall: "Wand von hier weiterzeichnen",
     ctx_delete_point: "Punkt löschen (Entf)",
     ctx_insert_point: "Punkt hier einfügen",
+    ctx_insert_door: "Tür hier einfügen",
+    ctx_insert_window: "Fenster hier einfügen",
     ctx_delete_wall: "Wand löschen",
+    ctx_delete_opening: "Öffnung löschen (Entf)",
+    opening_door: "Tür",
+    opening_window: "Fenster",
+    opening_width: "Breite",
+    opening_elevation: "Brüstungshöhe",
+    opening_pos: "Position",
 };
 
 static EN: Strings = Strings {
@@ -154,5 +170,13 @@ static EN: Strings = Strings {
     ctx_continue_wall: "Continue Wall from Here",
     ctx_delete_point: "Delete Point (Del)",
     ctx_insert_point: "Insert Point Here",
+    ctx_insert_door: "Insert Door Here",
+    ctx_insert_window: "Insert Window Here",
     ctx_delete_wall: "Delete Wall",
+    ctx_delete_opening: "Delete Opening (Del)",
+    opening_door: "Door",
+    opening_window: "Window",
+    opening_width: "Width",
+    opening_elevation: "Elevation",
+    opening_pos: "Position",
 };

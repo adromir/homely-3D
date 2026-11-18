@@ -34,6 +34,9 @@ pub enum ContextMenuKind {
         wx: f64,
         wy: f64,
     },
+    Opening {
+        opening_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +54,7 @@ pub struct EditorState {
     pub active_level_id: String,
     pub selected_wall_id: Option<String>,
     pub selected_anchor_index: Option<usize>,
+    pub selected_opening_id: Option<String>,
     pub drag_state: Option<DragAnchorState>,
     /// Active start point when chaining new 2-point walls with `Ctrl + Left-click`.
     pub active_draw_from: Option<(f64, f64)>,
@@ -132,6 +136,7 @@ impl Default for EditorState {
             active_level_id: "lvl-0".into(),
             selected_wall_id: Some("wall-1".into()),
             selected_anchor_index: None,
+            selected_opening_id: None,
             drag_state: None,
             active_draw_from: None,
             context_menu: None,
@@ -176,6 +181,7 @@ impl EditorState {
         self.active_level_id = "lvl-0".into();
         self.selected_wall_id = None;
         self.selected_anchor_index = None;
+        self.selected_opening_id = None;
         self.drag_state = None;
         self.active_draw_from = None;
         self.context_menu = None;
@@ -192,6 +198,11 @@ impl EditorState {
             if self.selected_wall_id.as_deref() == Some(wall_id.as_str()) {
                 self.selected_wall_id = None;
                 self.selected_anchor_index = None;
+            }
+        }
+        if let ProjectCommand::RemoveOpening { ref opening_id } = cmd {
+            if self.selected_opening_id.as_deref() == Some(opening_id.as_str()) {
+                self.selected_opening_id = None;
             }
         }
         match self.history.execute(&mut self.project, cmd) {
