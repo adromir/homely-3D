@@ -1002,25 +1002,6 @@ fn handle_2d_input(
                     editor.selected_opening_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
-                } else if let Some(seed_wall_id) = find_room_seed_wall_at_world(wx, wy, editor) {
-                    // Clicking inside a room directly drags the building (or selected group if it contains that wall)
-                    if editor.selected_group_wall_ids.contains(&seed_wall_id) {
-                        editor.building_drag = Some(BuildingDragState {
-                            wall_ids: editor.selected_group_wall_ids.clone(),
-                            furniture_ids: editor.selected_group_furniture_ids.clone(),
-                            start_world: (wx, wy),
-                            applied_dx: 0.0,
-                            applied_dy: 0.0,
-                            click_to_place: false,
-                        });
-                        editor.status = format!(
-                            "Moving selected group ({} walls)...",
-                            editor.selected_group_wall_ids.len()
-                        );
-                    } else {
-                        start_building_drag(editor, &seed_wall_id, wx, wy, false);
-                    }
-                    return;
                 } else {
                     editor.selected_group_wall_ids.clear();
                     editor.selected_group_furniture_ids.clear();
@@ -1226,32 +1207,6 @@ fn handle_2d_input(
             editor.execute_cmd(ProjectCommand::Batch(cmds));
         }
     }
-}
-
-fn find_room_seed_wall_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<String> {
-    let level_walls: Vec<Wall> = editor
-        .project
-        .walls
-        .iter()
-        .filter(|w| w.level_id == editor.active_level_id)
-        .cloned()
-        .collect();
-    let rooms = detect_rooms(&level_walls, 2.6);
-    let pt = homely_core::geometry::Vec2::new(wx, wy);
-    for room in &rooms {
-        if point_in_polygon(pt, &room.polygon) {
-            for wall in &level_walls {
-                for a in &wall.anchors {
-                    if room.polygon.iter().any(|p| {
-                        ((p.x - a.pos_x).powi(2) + (p.y - a.pos_y).powi(2)).sqrt() < 0.05
-                    }) {
-                        return Some(wall.id.clone());
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn start_building_drag(
