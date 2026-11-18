@@ -22,7 +22,8 @@ use homely_core::rooms::{
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{
     BuildingPreset, CatalogCategory, CatalogItem, FloorZone, Opening, OpeningType, PaintStyle,
-    PointType, SurfaceFinish, SurfaceTexture, UnitSystem, Wall, WallAnchorPoint, METERS_PER_FOOT,
+    PointType, SurfaceFinish, SurfaceTexture, TerrainTexture, UnitSystem, Wall, WallAnchorPoint,
+    METERS_PER_FOOT,
 };
 use std::path::Path;
 
@@ -2477,6 +2478,99 @@ pub fn draw_preview_3d_overlay(
 
                 if env_changed {
                     editor.env_dirty_3d = true;
+                }
+
+                ui.separator();
+                ui.label(egui::RichText::new(s.ter_title).strong());
+                let mut ter_changed = false;
+                ter_changed |= ui
+                    .checkbox(&mut editor.project.terrain.enabled, s.ter_enabled)
+                    .changed();
+
+                let ter_tex_label = |t: TerrainTexture| -> &'static str {
+                    match t {
+                        TerrainTexture::Grass => s.ter_grass,
+                        TerrainTexture::Meadow => s.ter_meadow,
+                        TerrainTexture::SoilEarth => s.ter_soil,
+                        TerrainTexture::Sand => s.ter_sand,
+                        TerrainTexture::Gravel => s.ter_gravel,
+                        TerrainTexture::StoneRock => s.ter_stone,
+                    }
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}:", s.ter_texture));
+                    egui::ComboBox::from_id_salt("p3d_ter_tex")
+                        .selected_text(ter_tex_label(editor.project.terrain.texture))
+                        .show_ui(ui, |ui| {
+                            for tex in [
+                                TerrainTexture::Grass,
+                                TerrainTexture::Meadow,
+                                TerrainTexture::SoilEarth,
+                                TerrainTexture::Sand,
+                                TerrainTexture::Gravel,
+                                TerrainTexture::StoneRock,
+                            ] {
+                                ter_changed |= ui
+                                    .selectable_value(
+                                        &mut editor.project.terrain.texture,
+                                        tex,
+                                        ter_tex_label(tex),
+                                    )
+                                    .changed();
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}:", s.fin_color_1));
+                    ter_changed |= ui
+                        .color_edit_button_srgb(&mut editor.project.terrain.tint_color)
+                        .changed();
+                });
+
+                if editor.project.terrain.enabled {
+                    ter_changed |= ui
+                        .add(
+                            egui::Slider::new(&mut editor.project.terrain.amplitude_m, 0.0..=2.5)
+                                .suffix(" m")
+                                .text(s.ter_amplitude),
+                        )
+                        .changed();
+                    ter_changed |= ui
+                        .add(
+                            egui::Slider::new(&mut editor.project.terrain.frequency, 0.05..=0.40)
+                                .text(s.ter_frequency),
+                        )
+                        .changed();
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}:", s.ter_seed));
+                        ter_changed |= ui
+                            .add(egui::DragValue::new(&mut editor.project.terrain.seed))
+                            .changed();
+                        if ui.button("🎲").clicked() {
+                            editor.project.terrain.seed =
+                                editor.project.terrain.seed.wrapping_add(17);
+                            ter_changed = true;
+                        }
+                    });
+                }
+
+                ter_changed |= ui
+                    .checkbox(&mut editor.project.terrain.auto_foundation, s.ter_foundation)
+                    .changed();
+                if editor.project.terrain.auto_foundation {
+                    ter_changed |= ui
+                        .add(
+                            egui::Slider::new(
+                                &mut editor.project.terrain.foundation_depth_m,
+                                0.2..=2.0,
+                            )
+                            .suffix(" m")
+                            .text(s.ter_found_depth),
+                        )
+                        .changed();
+                }
+                if ter_changed {
+                    editor.dirty_3d = true;
                 }
 
                 ui.separator();

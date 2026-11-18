@@ -12,8 +12,11 @@ use homely_core::geometry::{
     compute_level_wall_offsets, polyline_length, sample_polyline_at_t, slice_offset_pairs,
     tessellate_wall_centerline, Vec2 as CoreVec2,
 };
-use homely_core::rooms::{detect_rooms, room_signature, triangulate_polygon};
-use homely_core::{Opening, OpeningType, PaintStyle, Project, SurfaceFinish, SurfaceTexture};
+use homely_core::rooms::{detect_rooms, point_in_polygon, room_signature, triangulate_polygon};
+use homely_core::{
+    sample_terrain_height, Opening, OpeningType, PaintStyle, Project, SurfaceFinish,
+    SurfaceTexture, TerrainSettings, TerrainTexture,
+};
 
 /// Bevy plugin that spawns the `Homely 3D — 3D Viewer` window and keeps 3D geometry in sync.
 pub struct Viewer3dPlugin;
@@ -219,16 +222,41 @@ fn rebuild_3d_scene(
 
     let pw = state.plan_width.max(1.0) as f32;
     let ph = state.plan_height.max(1.0) as f32;
+
+    // Collect ground-floor room polygons so terrain stays cleanly recessed beneath interior slabs
+    let ground_rooms: Vec<Vec<CoreVec2>> = state
+        .project
+        .levels
+        .iter()
+        .filter(|l| l.elevation.abs() < 0.05)
+        .flat_map(|l| {
+            let lw: Vec<_> = state
+                .project
+                .walls
+                .iter()
+                .filter(|w| w.level_id == l.id)
+                .cloned()
+                .collect();
+            detect_rooms(&lw, l.height)
+                .into_iter()
+                .map(|r| r.polygon)
+        })
+        .collect();
+
+    let terrain_mesh = build_terrain_mesh(pw, ph, &state.project.terrain, &ground_rooms);
+    let terrain_mat = create_terrain_material(&state.project.terrain, &mut images, &mut materials);
     commands.spawn((
         SceneMesh3d,
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(pw, ph))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.22, 0.24, 0.27),
-            perceptual_roughness: 0.9,
-            ..default()
-        })),
-        Transform::from_xyz(pw * 0.5, 0.0, ph * 0.5),
+        Mesh3d(meshes.add(terrain_mesh)),
+        MeshMaterial3d(terrain_mat),
+        Transform::IDENTITY,
     ));
+
+    let foundation_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(116, 120, 126),
+        perceptual_roughness: 0.92,
+        ..default()
+    });
 
     let selected_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.45, 0.72, 0.95),
@@ -301,6 +329,25 @@ fn rebuild_3d_scene(
                 MeshMaterial3d(floor_mat),
                 Transform::IDENTITY,
             ));
+
+            // Automatic room foundation slab beneath ground-level rooms
+            if state.project.terrain.auto_foundation && level_elev.abs() < 0.05 {
+                let mut min_h = 0.0_f32;
+                for p in &room.polygon {
+                    let h = sample_terrain_height(&state.project.terrain, p.x, p.y) as f32;
+                    min_h = min_h.min(h);
+                }
+                let found_bot =
+                    (min_h - state.project.terrain.foundation_depth_m).min(-0.20);
+                if let Some(fmesh) = build_room_foundation_mesh(&room.polygon, found_bot, level_elev) {
+                    commands.spawn((
+                        SceneMesh3d,
+                        Mesh3d(meshes.add(fmesh)),
+                        MeshMaterial3d(foundation_mat.clone()),
+                        Transform::IDENTITY,
+                    ));
+                }
+            }
         }
 
         // Custom floor zones (e.g., tile kitchen island, parquet rug) rendered slightly above base room floor
@@ -382,6 +429,29 @@ fn rebuild_3d_scene(
 
             let centerline = tessellate_wall_centerline(wall, 0.02);
             let total_len = polyline_length(&centerline);
+
+            // Automatic wall foundation footing under ground-level walls
+            if state.project.terrain.auto_foundation && level_elev.abs() < 0.05 {
+                let mut min_h = 0.0_f32;
+                for p in &centerline {
+                    let h = sample_terrain_height(&state.project.terrain, p.x, p.y) as f32;
+                    min_h = min_h.min(h);
+                }
+                let found_bot =
+                    (min_h - state.project.terrain.foundation_depth_m).min(-0.20);
+                let (fa, fb, fcap) =
+                    build_mitered_wall_meshes(pairs, found_bot, level_elev, found_bot, level_elev, wall.is_closed_loop);
+                for m_opt in [fa, fb, fcap] {
+                    if let Some(m) = m_opt {
+                        commands.spawn((
+                            SceneMesh3d,
+                            Mesh3d(meshes.add(m)),
+                            MeshMaterial3d(foundation_mat.clone()),
+                            Transform::IDENTITY,
+                        ));
+                    }
+                }
+            }
 
             let mut wall_openings: Vec<&Opening> = state
                 .project
@@ -1148,4 +1218,176 @@ fn build_mitered_wall_meshes(
         finalize(pos_b, uv_b, idx_b),
         finalize(pos_cap, uv_cap, idx_cap),
     )
+}
+
+fn build_terrain_mesh(
+    pw: f32,
+    ph: f32,
+    settings: &TerrainSettings,
+    ground_rooms: &[Vec<CoreVec2>],
+) -> Mesh {
+    let cols = ((pw * 2.0).round() as usize).clamp(12, 80);
+    let rows = ((ph * 2.0).round() as usize).clamp(12, 80);
+
+    let mut positions = Vec::with_capacity((cols + 1) * (rows + 1));
+    let mut uvs = Vec::with_capacity((cols + 1) * (rows + 1));
+    let mut indices = Vec::with_capacity(cols * rows * 6);
+
+    for r in 0..=rows {
+        let vz = r as f32 / rows as f32;
+        let z = vz * ph;
+        for c in 0..=cols {
+            let ux = c as f32 / cols as f32;
+            let x = ux * pw;
+            let mut h = sample_terrain_height(settings, f64::from(x), f64::from(z)) as f32;
+            if settings.enabled {
+                let p = CoreVec2::new(f64::from(x), f64::from(z));
+                if ground_rooms.iter().any(|poly| point_in_polygon(p, poly)) {
+                    h = h.min(-0.04);
+                }
+            }
+            positions.push([x, h, z]);
+            uvs.push([x * 0.4, z * 0.4]);
+        }
+    }
+
+    let stride = cols + 1;
+    for r in 0..rows {
+        for c in 0..cols {
+            let i0 = (r * stride + c) as u32;
+            let i1 = i0 + 1;
+            let i2 = ((r + 1) * stride + c) as u32;
+            let i3 = i2 + 1;
+            indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
+        }
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh.compute_normals();
+    mesh
+}
+
+fn create_terrain_material(
+    settings: &TerrainSettings,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Handle<StandardMaterial> {
+    let size = 128u32;
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    let tint = [
+        settings.tint_color[0] as f32,
+        settings.tint_color[1] as f32,
+        settings.tint_color[2] as f32,
+    ];
+
+    for py in 0..size {
+        for px in 0..size {
+            let h1 = ((px.wrapping_mul(374761393) ^ py.wrapping_mul(668265263))
+                .wrapping_mul(1274126177))
+                >> 24;
+            let n1 = (h1 as f32) / 255.0 - 0.5;
+            let h2 = (((px / 4).wrapping_mul(2246822519) ^ (py / 4).wrapping_mul(3266489917))
+                .wrapping_mul(668265263))
+                >> 24;
+            let n2 = (h2 as f32) / 255.0 - 0.5;
+
+            let (r, g, b) = match settings.texture {
+                TerrainTexture::Grass => {
+                    let blade = ((px as f32 * 0.7 + py as f32 * 0.3).sin()) * 0.06;
+                    let f = 1.0 + n1 * 0.22 + n2 * 0.14 + blade;
+                    (tint[0] * f, tint[1] * f, tint[2] * f)
+                }
+                TerrainTexture::Meadow => {
+                    let flower = if h1 > 246 { 1.35 } else { 1.0 };
+                    let f = (1.0 + n1 * 0.20 + n2 * 0.16) * flower;
+                    (
+                        (tint[0] * f + if h1 > 246 { 65.0 } else { 0.0 }),
+                        (tint[1] * f + if h1 > 246 { 55.0 } else { 0.0 }),
+                        tint[2] * f,
+                    )
+                }
+                TerrainTexture::SoilEarth => {
+                    let f = 0.85 + n1 * 0.25 + n2 * 0.18;
+                    (124.0 * f, 90.0 * f, 60.0 * f)
+                }
+                TerrainTexture::Sand => {
+                    let ripple = ((py as f32 * 0.25 + (px as f32 * 0.08).sin() * 2.0).sin()) * 0.05;
+                    let f = 0.96 + n1 * 0.10 + ripple;
+                    (216.0 * f, 194.0 * f, 146.0 * f)
+                }
+                TerrainTexture::Gravel => {
+                    let pebble = if h1 > 210 { 1.18 } else if h1 < 45 { 0.78 } else { 0.96 };
+                    let f = pebble + n2 * 0.10;
+                    (145.0 * f, 144.0 * f, 140.0 * f)
+                }
+                TerrainTexture::StoneRock => {
+                    let crack = if ((px + py * 2) % 37) < 2 { 0.72 } else { 1.0 };
+                    let f = crack * (0.94 + n1 * 0.16 + n2 * 0.18);
+                    (122.0 * f, 126.0 * f, 130.0 * f)
+                }
+            };
+
+            data.push(r.clamp(0.0, 255.0) as u8);
+            data.push(g.clamp(0.0, 255.0) as u8);
+            data.push(b.clamp(0.0, 255.0) as u8);
+            data.push(255);
+        }
+    }
+
+    let mut img = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        ..default()
+    });
+    materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(img)),
+        perceptual_roughness: 0.94,
+        ..default()
+    })
+}
+
+fn build_room_foundation_mesh(poly: &[CoreVec2], y_bot: f32, y_top: f32) -> Option<Mesh> {
+    if poly.len() < 3 || y_top - y_bot <= 0.01 {
+        return None;
+    }
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let base = positions.len() as u32;
+        positions.extend_from_slice(&[
+            [a.x as f32, y_bot, a.y as f32],
+            [b.x as f32, y_bot, b.y as f32],
+            [b.x as f32, y_top, b.y as f32],
+            [a.x as f32, y_top, a.y as f32],
+        ]);
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh.duplicate_vertices();
+    mesh.compute_flat_normals();
+    Some(mesh)
 }

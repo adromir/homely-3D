@@ -433,6 +433,60 @@ impl SurfaceFinish {
     }
 }
 
+/// Procedural surface texture pattern for 3D terrain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainTexture {
+    #[default]
+    Grass,
+    Meadow,
+    SoilEarth,
+    Sand,
+    Gravel,
+    StoneRock,
+}
+
+/// Configurable terrain generator and automatic foundation settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerrainSettings {
+    pub enabled: bool,
+    pub seed: u32,
+    pub amplitude_m: f32,
+    pub frequency: f32,
+    pub auto_foundation: bool,
+    pub foundation_depth_m: f32,
+    pub texture: TerrainTexture,
+    pub tint_color: [u8; 3],
+}
+
+impl Default for TerrainSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            seed: 42,
+            amplitude_m: 0.45,
+            frequency: 0.14,
+            auto_foundation: true,
+            foundation_depth_m: 0.60,
+            texture: TerrainTexture::Grass,
+            tint_color: [98, 145, 78],
+        }
+    }
+}
+
+/// Deterministic multi-octave terrain height in meters at world `(x, z)`.
+pub fn sample_terrain_height(settings: &TerrainSettings, x: f64, z: f64) -> f64 {
+    if !settings.enabled || settings.amplitude_m <= 1e-4 {
+        return 0.0;
+    }
+    let f = f64::from(settings.frequency.max(0.01));
+    let s = f64::from(settings.seed % 10_000) * 1.37;
+    let n1 = ((x * f + s).sin() * (z * f * 0.9 - s * 0.7).cos())
+        + 0.5 * ((x * f * 2.1 - s * 0.4).cos() + (z * f * 1.9 + s * 0.8).sin());
+    let n2 = 0.25 * ((x * f * 4.3 + z * f * 3.7 + s).sin());
+    (n1 * 0.45 + n2) * f64::from(settings.amplitude_m)
+}
+
 /// A rectangular custom floor finish zone (e.g., tiled kitchen area, rug/parquet inlay).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FloorZone {
@@ -542,4 +596,6 @@ pub struct Project {
     pub room_finishes: BTreeMap<String, SurfaceFinish>,
     #[serde(default)]
     pub floor_zones: Vec<FloorZone>,
+    #[serde(default)]
+    pub terrain: TerrainSettings,
 }
