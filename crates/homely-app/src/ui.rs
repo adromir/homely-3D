@@ -2240,11 +2240,38 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                 }
             }
             if let Some((idx, anchor)) = anchor_update {
-                editor.execute_cmd(ProjectCommand::UpdateWallAnchor {
-                    wall_id: wall.id,
-                    anchor_index: idx,
-                    anchor,
-                });
+                let orig = &wall.anchors[idx];
+                let moved = (anchor.pos_x - orig.pos_x).abs() > 1e-9
+                    || (anchor.pos_y - orig.pos_y).abs() > 1e-9;
+                let linked = if moved {
+                    collect_linked_anchors(editor, &wall.id, idx, orig.pos_x, orig.pos_y)
+                } else {
+                    Vec::new()
+                };
+                if linked.is_empty() {
+                    editor.execute_cmd(ProjectCommand::UpdateWallAnchor {
+                        wall_id: wall.id,
+                        anchor_index: idx,
+                        anchor,
+                    });
+                } else {
+                    let new_x = anchor.pos_x;
+                    let new_y = anchor.pos_y;
+                    let mut cmds = vec![ProjectCommand::UpdateWallAnchor {
+                        wall_id: wall.id,
+                        anchor_index: idx,
+                        anchor,
+                    }];
+                    for (lwid, lidx, mut la) in linked {
+                        shift_anchor(&mut la, new_x, new_y);
+                        cmds.push(ProjectCommand::UpdateWallAnchor {
+                            wall_id: lwid,
+                            anchor_index: lidx,
+                            anchor: la,
+                        });
+                    }
+                    editor.execute_cmd(ProjectCommand::Batch(cmds));
+                }
             }
         }
     }
@@ -2338,7 +2365,9 @@ fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
     egui::ScrollArea::vertical()
         .id_salt("scene_tree_scroll")
         .max_height(210.0)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             for (r_idx, room) in rooms.iter().enumerate() {
                 let sig = room_signature(&room.polygon);
                 let default_name = match editor.lang {
