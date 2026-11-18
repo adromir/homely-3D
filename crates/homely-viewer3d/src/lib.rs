@@ -303,6 +303,38 @@ fn rebuild_3d_scene(
             ));
         }
 
+        // Custom floor zones (e.g., tile kitchen island, parquet rug) rendered slightly above base room floor
+        for zone in state.project.floor_zones.iter().filter(|z| z.level_id == level.id) {
+            let zw = (zone.max_x - zone.min_x).abs().max(0.1) as f32;
+            let zd = (zone.max_y - zone.min_y).abs().max(0.1) as f32;
+            let cx = ((zone.min_x + zone.max_x) * 0.5) as f32;
+            let cz = ((zone.min_y + zone.max_y) * 0.5) as f32;
+            let zone_finish = SurfaceFinish {
+                texture: zone.texture,
+                secondary_texture: None,
+                paint_style: PaintStyle::Solid,
+                primary_color: zone.color,
+                secondary_color: zone.color,
+                trim_width_m: 0.12,
+            };
+            let zone_mat = create_finish_material(&zone_finish, 2.5, true, &mut images, &mut materials);
+            let mut zmesh = Mesh::from(Plane3d::default().mesh().size(zw, zd));
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                zmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+            {
+                for uv in uvs.iter_mut() {
+                    uv[0] *= zw * 0.5;
+                    uv[1] *= zd * 0.5;
+                }
+            }
+            commands.spawn((
+                SceneMesh3d,
+                Mesh3d(meshes.add(zmesh)),
+                MeshMaterial3d(zone_mat),
+                Transform::from_xyz(cx, level_elev + 0.015, cz),
+            ));
+        }
+
         let all_pairs = compute_level_wall_offsets(&level_walls, 0.02);
         for (wall, pairs) in level_walls.iter().zip(all_pairs.iter()) {
             if pairs.len() < 2 {
@@ -781,6 +813,48 @@ fn update_3d_camera_and_visibility(
     *transform = orbit.transform();
 }
 
+fn texture_factor(tex: SurfaceTexture, px: u32, py: u32, noise: f32) -> f32 {
+    match tex {
+        SurfaceTexture::Smooth => 1.0 + noise * 0.03,
+        SurfaceTexture::Plaster => 1.0 + noise * 0.14,
+        SurfaceTexture::Brick => {
+            let row = (py / 16) % 2;
+            let bx = (px + row * 16) % 32;
+            let by = py % 16;
+            if bx < 2 || by < 2 {
+                0.72 + noise * 0.05
+            } else {
+                0.96 + noise * 0.08
+            }
+        }
+        SurfaceTexture::WoodPlanks => {
+            let plank = py / 16;
+            let seam = py % 16 == 0 || ((px + plank * 37) % 64 == 0);
+            let grain = ((px as f32 * 0.12 + plank as f32 * 1.7).sin()) * 0.04;
+            if seam {
+                0.74
+            } else {
+                0.98 + grain + noise * 0.05
+            }
+        }
+        SurfaceTexture::Tile => {
+            if px % 32 < 2 || py % 32 < 2 {
+                0.76
+            } else {
+                1.0 + noise * 0.03
+            }
+        }
+        SurfaceTexture::Concrete => {
+            let panel_seam = px == 0 || py % 64 == 0;
+            if panel_seam {
+                0.82
+            } else {
+                0.96 + noise * 0.11
+            }
+        }
+    }
+}
+
 fn create_finish_material(
     finish: &SurfaceFinish,
     wall_height: f32,
@@ -801,6 +875,7 @@ fn create_finish_material(
         finish.secondary_color[2] as f32,
     ];
     let trim_frac = (finish.trim_width_m / wall_height.max(0.5)).clamp(0.02, 0.45);
+    let tex2 = finish.secondary_texture.unwrap_or(finish.texture);
 
     for py in 0..size {
         // v = 0 at top of image (y_top on walls), 1 at bottom of image (y_bot on walls)
@@ -816,111 +891,80 @@ fn create_finish_material(
                 >> 24;
             let noise = (hash as f32) / 255.0 - 0.5;
 
-            let tex_factor = match finish.texture {
-                SurfaceTexture::Smooth => 1.0 + noise * 0.03,
-                SurfaceTexture::Plaster => 1.0 + noise * 0.14,
-                SurfaceTexture::Brick => {
-                    let row = (py / 16) % 2;
-                    let bx = (px + row * 16) % 32;
-                    let by = py % 16;
-                    if bx < 2 || by < 2 {
-                        0.72 + noise * 0.05
-                    } else {
-                        0.96 + noise * 0.08
-                    }
-                }
-                SurfaceTexture::WoodPlanks => {
-                    let plank = py / 16;
-                    let seam = py % 16 == 0 || ((px + plank * 37) % 64 == 0);
-                    let grain = ((px as f32 * 0.12 + plank as f32 * 1.7).sin()) * 0.04;
-                    if seam {
-                        0.74
-                    } else {
-                        0.98 + grain + noise * 0.05
-                    }
-                }
-                SurfaceTexture::Tile => {
-                    if px % 32 < 2 || py % 32 < 2 {
-                        0.76
-                    } else {
-                        1.0 + noise * 0.03
-                    }
-                }
-                SurfaceTexture::Concrete => {
-                    let panel_seam = px == 0 || py % 64 == 0;
-                    if panel_seam {
-                        0.82
-                    } else {
-                        0.96 + noise * 0.11
-                    }
-                }
-            };
+            let tf1 = texture_factor(finish.texture, px, py, noise);
+            let tf2 = texture_factor(tex2, px, py, noise);
 
-            let base_rgb = if is_floor {
+            let (base_rgb, tex_factor) = if is_floor {
                 match finish.paint_style {
-                    PaintStyle::Solid | PaintStyle::OpeningTrim => c1,
+                    PaintStyle::Solid | PaintStyle::OpeningTrim => (c1, tf1),
                     PaintStyle::BaseboardTrim | PaintStyle::CrownTrim => {
                         if u < trim_frac * 0.5
                             || u > 1.0 - trim_frac * 0.5
                             || v_top_down < trim_frac * 0.5
                             || v_top_down > 1.0 - trim_frac * 0.5
                         {
-                            c2
+                            (c2, tf2)
                         } else {
-                            c1
+                            (c1, tf1)
                         }
                     }
                     PaintStyle::TwoTone => {
                         if ((px / 32) + (py / 32)) % 2 == 0 {
-                            c1
+                            (c1, tf1)
                         } else {
-                            c2
+                            (c2, tf2)
                         }
                     }
                     PaintStyle::Gradient => {
                         let t = (u + v_top_down) * 0.5;
-                        [
-                            c1[0] * (1.0 - t) + c2[0] * t,
-                            c1[1] * (1.0 - t) + c2[1] * t,
-                            c1[2] * (1.0 - t) + c2[2] * t,
-                        ]
+                        (
+                            [
+                                c1[0] * (1.0 - t) + c2[0] * t,
+                                c1[1] * (1.0 - t) + c2[1] * t,
+                                c1[2] * (1.0 - t) + c2[2] * t,
+                            ],
+                            tf1 * (1.0 - t) + tf2 * t,
+                        )
                     }
                 }
             } else {
                 match finish.paint_style {
-                    PaintStyle::Solid | PaintStyle::OpeningTrim => c1,
+                    PaintStyle::Solid | PaintStyle::OpeningTrim => (c1, tf1),
                     PaintStyle::BaseboardTrim => {
                         if h_frac <= trim_frac {
-                            c2
+                            (c2, tf2)
                         } else if (h_frac - trim_frac).abs() < 0.012 {
-                            [c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85]
+                            ([c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85], tf2)
                         } else {
-                            c1
+                            (c1, tf1)
                         }
                     }
                     PaintStyle::CrownTrim => {
                         if h_frac >= 1.0 - trim_frac {
-                            c2
+                            (c2, tf2)
                         } else if (h_frac - (1.0 - trim_frac)).abs() < 0.012 {
-                            [c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85]
+                            ([c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85], tf2)
                         } else {
-                            c1
+                            (c1, tf1)
                         }
                     }
                     PaintStyle::TwoTone => {
                         if h_frac < 0.45 {
-                            c2
+                            (c2, tf2)
                         } else if (h_frac - 0.45).abs() < 0.015 {
-                            [c2[0] * 0.82, c2[1] * 0.82, c2[2] * 0.82]
+                            ([c2[0] * 0.82, c2[1] * 0.82, c2[2] * 0.82], tf2)
                         } else {
-                            c1
+                            (c1, tf1)
                         }
                     }
-                    PaintStyle::Gradient => [
-                        c2[0] * (1.0 - h_frac) + c1[0] * h_frac,
-                        c2[1] * (1.0 - h_frac) + c1[1] * h_frac,
-                        c2[2] * (1.0 - h_frac) + c1[2] * h_frac,
-                    ],
+                    PaintStyle::Gradient => (
+                        [
+                            c2[0] * (1.0 - h_frac) + c1[0] * h_frac,
+                            c2[1] * (1.0 - h_frac) + c1[1] * h_frac,
+                            c2[2] * (1.0 - h_frac) + c1[2] * h_frac,
+                        ],
+                        tf2 * (1.0 - h_frac) + tf1 * h_frac,
+                    ),
                 }
             };
 

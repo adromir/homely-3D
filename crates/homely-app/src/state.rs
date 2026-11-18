@@ -61,6 +61,15 @@ pub struct ProjectDialogState {
     pub wall_height: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolMode {
+    #[default]
+    Select,
+    DrawWallPoint,
+    MarqueeSelect,
+    DrawFloorZone,
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildingDragState {
     pub wall_ids: Vec<String>,
@@ -78,11 +87,14 @@ pub struct EditorState {
     pub project: Project,
     pub history: CommandHistory,
     pub active_level_id: String,
+    pub tool_mode: ToolMode,
     pub selected_wall_id: Option<String>,
     pub selected_anchor_index: Option<usize>,
     pub selected_opening_id: Option<String>,
     pub selected_room_sig: Option<String>,
+    pub selected_floor_zone_id: Option<String>,
     pub selection_box: Option<((f64, f64), (f64, f64))>,
+    pub floor_zone_draw: Option<((f64, f64), (f64, f64))>,
     pub selected_group_wall_ids: Vec<String>,
     pub selected_group_furniture_ids: Vec<String>,
     pub drag_state: Option<DragAnchorState>,
@@ -184,11 +196,14 @@ impl Default for EditorState {
             project,
             history,
             active_level_id: "lvl-0".into(),
+            tool_mode: ToolMode::Select,
             selected_wall_id: Some("wall-1".into()),
             selected_anchor_index: None,
             selected_opening_id: None,
             selected_room_sig: None,
+            selected_floor_zone_id: None,
             selection_box: None,
+            floor_zone_draw: None,
             selected_group_wall_ids: Vec::new(),
             selected_group_furniture_ids: Vec::new(),
             drag_state: None,

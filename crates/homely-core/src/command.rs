@@ -1,7 +1,8 @@
 //! Command pattern and undo/redo transaction history for [`Project`].
 
 use crate::{
-    CoreError, FurnitureItem, Level, Opening, Project, SurfaceFinish, Wall, WallAnchorPoint,
+    CoreError, FloorZone, FurnitureItem, Level, Opening, Project, SurfaceFinish, Wall,
+    WallAnchorPoint,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,11 @@ pub enum ProjectCommand {
         signature: String,
         finish: SurfaceFinish,
     },
+    AddFloorZone(FloorZone),
+    UpdateFloorZone(FloorZone),
+    RemoveFloorZone {
+        zone_id: String,
+    },
     AddOpening(Opening),
     UpdateOpening(Opening),
     RemoveOpening {
@@ -99,6 +105,9 @@ impl ProjectCommand {
             Self::RenameRoom { name, .. } => format!("Rename Room -> {name}"),
             Self::UpdateWallFinish { wall_id, .. } => format!("Paint Wall {wall_id}"),
             Self::UpdateRoomFinish { .. } => "Paint Room Floor".into(),
+            Self::AddFloorZone(z) => format!("Add Floor Zone {}", z.name),
+            Self::UpdateFloorZone(z) => format!("Edit Floor Zone {}", z.name),
+            Self::RemoveFloorZone { zone_id } => format!("Remove Floor Zone {zone_id}"),
             Self::AddOpening(o) => format!("Add Opening {}", o.id),
             Self::UpdateOpening(o) => format!("Edit Opening {}", o.id),
             Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
@@ -310,6 +319,42 @@ impl ProjectCommand {
                     signature: signature.clone(),
                     finish: prev,
                 })
+            }
+            Self::AddFloorZone(zone) => {
+                if project.floor_zones.iter().any(|z| z.id == zone.id) {
+                    return Err(CoreError::DuplicateId {
+                        kind: "floor_zone",
+                        id: zone.id.clone(),
+                    });
+                }
+                project.floor_zones.push(zone.clone());
+                Ok(Self::RemoveFloorZone {
+                    zone_id: zone.id.clone(),
+                })
+            }
+            Self::UpdateFloorZone(zone) => {
+                let existing = project
+                    .floor_zones
+                    .iter_mut()
+                    .find(|z| z.id == zone.id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "floor_zone",
+                        id: zone.id.clone(),
+                    })?;
+                let prev = std::mem::replace(existing, zone.clone());
+                Ok(Self::UpdateFloorZone(prev))
+            }
+            Self::RemoveFloorZone { zone_id } => {
+                let idx = project
+                    .floor_zones
+                    .iter()
+                    .position(|z| z.id == *zone_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "floor_zone",
+                        id: zone_id.clone(),
+                    })?;
+                let removed = project.floor_zones.remove(idx);
+                Ok(Self::AddFloorZone(removed))
             }
             Self::AddOpening(opening) => {
                 ensure_exists(&project.walls, &opening.wall_id, |w| &w.id, "wall")?;

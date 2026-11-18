@@ -401,6 +401,8 @@ pub enum PaintStyle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceFinish {
     pub texture: SurfaceTexture,
+    #[serde(default)]
+    pub secondary_texture: Option<SurfaceTexture>,
     pub paint_style: PaintStyle,
     pub primary_color: [u8; 3],
     pub secondary_color: [u8; 3],
@@ -411,6 +413,7 @@ impl SurfaceFinish {
     pub fn default_wall() -> Self {
         Self {
             texture: SurfaceTexture::Plaster,
+            secondary_texture: None,
             paint_style: PaintStyle::Solid,
             primary_color: [222, 219, 212],
             secondary_color: [248, 248, 246],
@@ -421,12 +424,27 @@ impl SurfaceFinish {
     pub fn default_floor() -> Self {
         Self {
             texture: SurfaceTexture::WoodPlanks,
+            secondary_texture: None,
             paint_style: PaintStyle::Solid,
             primary_color: [162, 128, 92],
             secondary_color: [120, 90, 60],
             trim_width_m: 0.12,
         }
     }
+}
+
+/// A rectangular custom floor finish zone (e.g., tiled kitchen area, rug/parquet inlay).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FloorZone {
+    pub id: String,
+    pub name: String,
+    pub level_id: String,
+    pub min_x: f64,
+    pub min_y: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+    pub texture: SurfaceTexture,
+    pub color: [u8; 3],
 }
 
 impl Default for SurfaceFinish {
@@ -522,4 +540,6 @@ pub struct Project {
     pub room_names: BTreeMap<String, String>,
     #[serde(default)]
     pub room_finishes: BTreeMap<String, SurfaceFinish>,
+    #[serde(default)]
+    pub floor_zones: Vec<FloorZone>,
 }

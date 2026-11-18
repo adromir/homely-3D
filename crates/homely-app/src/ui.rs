@@ -3,7 +3,7 @@
 use crate::i18n::{tr, Lang};
 use crate::state::{
     corner, BuildingDragState, ContextMenuKind, ContextMenuState, DragAnchorState, DragHandleKind,
-    EditorState, ProjectDialogState,
+    EditorState, ProjectDialogState, ToolMode,
 };
 use crate::theme::{self, apply_native_theme, dock_style, load_logo_texture};
 use bevy::app::AppExit;
@@ -21,8 +21,8 @@ use homely_core::rooms::{
 };
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{
-    BuildingPreset, CatalogCategory, CatalogItem, Opening, OpeningType, PaintStyle, PointType,
-    SurfaceFinish, SurfaceTexture, UnitSystem, Wall, WallAnchorPoint, METERS_PER_FOOT,
+    BuildingPreset, CatalogCategory, CatalogItem, FloorZone, Opening, OpeningType, PaintStyle,
+    PointType, SurfaceFinish, SurfaceTexture, UnitSystem, Wall, WallAnchorPoint, METERS_PER_FOOT,
 };
 use std::path::Path;
 
@@ -275,6 +275,65 @@ pub fn draw_dock_ui(
                     .size(12.0)
                     .color(theme::TEXT_MUTED),
             );
+            ui.add_space(4.0);
+
+            if tool_button(
+                ui,
+                ToolIcon::SelectArrow,
+                s.tool_select,
+                editor.tool_mode == ToolMode::Select,
+                true,
+            )
+            .clicked()
+            {
+                editor.tool_mode = ToolMode::Select;
+                editor.active_draw_from = None;
+            }
+            ui.add_space(3.0);
+
+            if tool_button(
+                ui,
+                ToolIcon::DrawPen,
+                s.tool_draw_wall,
+                editor.tool_mode == ToolMode::DrawWallPoint,
+                true,
+            )
+            .on_hover_text("Ctrl + Click")
+            .clicked()
+            {
+                editor.tool_mode = ToolMode::DrawWallPoint;
+            }
+            ui.add_space(3.0);
+
+            if tool_button(
+                ui,
+                ToolIcon::MarqueeRect,
+                s.tool_marquee,
+                editor.tool_mode == ToolMode::MarqueeSelect,
+                true,
+            )
+            .on_hover_text("Alt + Drag")
+            .clicked()
+            {
+                editor.tool_mode = ToolMode::MarqueeSelect;
+                editor.active_draw_from = None;
+            }
+            ui.add_space(3.0);
+
+            if tool_button(
+                ui,
+                ToolIcon::FloorRect,
+                s.tool_floor_zone,
+                editor.tool_mode == ToolMode::DrawFloorZone,
+                true,
+            )
+            .clicked()
+            {
+                editor.tool_mode = ToolMode::DrawFloorZone;
+                editor.active_draw_from = None;
+            }
+            ui.add_space(8.0);
+            ui.separator();
             ui.add_space(4.0);
 
             let can_delete_point =
@@ -585,6 +644,40 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
     }
 
     // Existing walls (neighbor-aware mitered corners)
+    // Custom floor zones on active level
+    for zone in editor
+        .project
+        .floor_zones
+        .iter()
+        .filter(|z| z.level_id == editor.active_level_id)
+    {
+        let zrect = egui::Rect::from_two_pos(
+            world_to_screen(zone.min_x, zone.min_y),
+            world_to_screen(zone.max_x, zone.max_y),
+        );
+        let is_z_sel = editor.selected_floor_zone_id.as_deref() == Some(&zone.id);
+        let zfill = egui::Color32::from_rgba_unmultiplied(
+            zone.color[0],
+            zone.color[1],
+            zone.color[2],
+            if is_z_sel { 130 } else { 85 },
+        );
+        let zstroke = if is_z_sel {
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255))
+        } else {
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(220, 220, 220, 140))
+        };
+        painter.rect_filled(zrect, 0.0, zfill);
+        painter.rect_stroke(zrect, 0.0, zstroke, egui::StrokeKind::Inside);
+        painter.text(
+            zrect.center(),
+            egui::Align2::CENTER_CENTER,
+            &zone.name,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_unmultiplied(240, 244, 250, 220),
+        );
+    }
+
     let all_pairs = compute_level_wall_offsets(&level_walls, 0.01);
     for (wall, pairs) in level_walls.iter().zip(all_pairs.iter()) {
         let is_selected = editor.selected_wall_id.as_deref() == Some(&wall.id);
@@ -806,6 +899,24 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         );
     }
 
+    if let Some((start_w, cur_w)) = editor.floor_zone_draw {
+        let rect = egui::Rect::from_two_pos(
+            world_to_screen(start_w.0, start_w.1),
+            world_to_screen(cur_w.0, cur_w.1),
+        );
+        painter.rect_filled(
+            rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(220, 170, 90, 55),
+        );
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 185, 95)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     handle_2d_input(
         ui,
         editor,
@@ -907,13 +1018,20 @@ fn handle_2d_input(
                 advance_building_mode(editor, pos, screen_to_world);
                 return;
             }
-            if ctrl_held {
+            if ctrl_held || editor.tool_mode == ToolMode::DrawWallPoint {
                 handle_ctrl_left_click(editor, pos, world_to_screen, screen_to_world);
                 return;
             }
-            if alt_held {
+            if alt_held || editor.tool_mode == ToolMode::MarqueeSelect {
                 let (wx, wy) = screen_to_world(pos);
                 editor.selection_box = Some(((wx, wy), (wx, wy)));
+                return;
+            }
+            if editor.tool_mode == ToolMode::DrawFloorZone {
+                let (wx, wy) = screen_to_world(pos);
+                let sx = snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width);
+                let sy = snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height);
+                editor.floor_zone_draw = Some(((sx, sy), (sx, sy)));
                 return;
             }
 
@@ -1000,15 +1118,75 @@ fn handle_2d_input(
                     editor.selected_wall_id = Some(wid.clone());
                     editor.selected_anchor_index = None;
                     editor.selected_opening_id = None;
+                    editor.selected_floor_zone_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
+                } else if let Some(zid) = editor
+                    .project
+                    .floor_zones
+                    .iter()
+                    .rev()
+                    .find(|z| {
+                        z.level_id == editor.active_level_id
+                            && wx >= z.min_x
+                            && wx <= z.max_x
+                            && wy >= z.min_y
+                            && wy <= z.max_y
+                    })
+                    .map(|z| z.id.clone())
+                {
+                    editor.selected_floor_zone_id = Some(zid.clone());
+                    editor.selected_wall_id = None;
+                    editor.selected_anchor_index = None;
+                    editor.selected_opening_id = None;
+                    editor.selected_room_sig = None;
+                    editor.status = format!("Selected floor zone {zid}.");
                 } else {
+                    editor.selected_floor_zone_id = None;
                     editor.selected_group_wall_ids.clear();
                     editor.selected_group_furniture_ids.clear();
                 }
             }
 
             editor.drag_state = started_drag;
+        }
+    }
+
+    // Active floor zone drawing
+    if let Some((start_w, mut cur_w)) = editor.floor_zone_draw.take() {
+        if primary_down {
+            if let Some(pos) = pointer_pos {
+                let (wx, wy) = screen_to_world(pos);
+                cur_w = (
+                    snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width),
+                    snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height),
+                );
+            }
+            editor.floor_zone_draw = Some((start_w, cur_w));
+            return;
+        } else {
+            let min_x = start_w.0.min(cur_w.0);
+            let max_x = start_w.0.max(cur_w.0);
+            let min_y = start_w.1.min(cur_w.1);
+            let max_y = start_w.1.max(cur_w.1);
+            if (max_x - min_x) >= 0.2 && (max_y - min_y) >= 0.2 {
+                let id = editor.alloc_id("fzone");
+                let num = editor.project.floor_zones.len() + 1;
+                let zone = FloorZone {
+                    id: id.clone(),
+                    name: format!("Zone {num}"),
+                    level_id: editor.active_level_id.clone(),
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                    texture: SurfaceTexture::Tile,
+                    color: [215, 212, 205],
+                };
+                editor.execute_cmd(ProjectCommand::AddFloorZone(zone));
+                editor.selected_floor_zone_id = Some(id);
+            }
+            return;
         }
     }
 
@@ -1962,6 +2140,10 @@ fn draw_rulers_and_cursor_coords(
 
 #[derive(Clone, Copy)]
 enum ToolIcon {
+    SelectArrow,
+    DrawPen,
+    MarqueeRect,
+    FloorRect,
     Trash,
     Cross,
 }
@@ -2031,6 +2213,40 @@ fn draw_vector_icon(p: &egui::Painter, r: egui::Rect, icon: ToolIcon, color: egu
     let pt = |nx: f32, ny: f32| egui::pos2(r.left() + r.width() * nx, r.top() + r.height() * ny);
 
     match icon {
+        ToolIcon::SelectArrow => {
+            let pts = vec![
+                pt(0.25, 0.15),
+                pt(0.25, 0.82),
+                pt(0.44, 0.65),
+                pt(0.58, 0.88),
+                pt(0.68, 0.82),
+                pt(0.54, 0.60),
+                pt(0.78, 0.58),
+            ];
+            p.add(egui::Shape::closed_line(pts, s));
+        }
+        ToolIcon::DrawPen => {
+            p.line_segment([pt(0.22, 0.78), pt(0.76, 0.24)], s);
+            p.circle_filled(pt(0.20, 0.80), 2.3, color);
+            p.circle_filled(pt(0.78, 0.22), 2.3, color);
+        }
+        ToolIcon::MarqueeRect => {
+            p.rect_stroke(
+                egui::Rect::from_min_max(pt(0.18, 0.22), pt(0.82, 0.78)),
+                1.0,
+                s,
+                egui::StrokeKind::Inside,
+            );
+            p.circle_filled(pt(0.18, 0.22), 2.0, color);
+            p.circle_filled(pt(0.82, 0.78), 2.0, color);
+        }
+        ToolIcon::FloorRect => {
+            let r_box = egui::Rect::from_min_max(pt(0.18, 0.22), pt(0.82, 0.78));
+            p.rect_filled(r_box, 1.0, color.linear_multiply(0.3));
+            p.rect_stroke(r_box, 1.0, s, egui::StrokeKind::Inside);
+            p.line_segment([pt(0.50, 0.22), pt(0.50, 0.78)], egui::Stroke::new(1.0, color));
+            p.line_segment([pt(0.18, 0.50), pt(0.82, 0.50)], egui::Stroke::new(1.0, color));
+        }
         ToolIcon::Trash => {
             p.line_segment([pt(0.2, 0.28), pt(0.8, 0.28)], s);
             p.line_segment([pt(0.38, 0.15), pt(0.62, 0.15)], s);
@@ -2715,6 +2931,30 @@ fn draw_surface_finish_editor(
             });
 
             if finish.paint_style != PaintStyle::Solid {
+                let mut tex2 = finish.secondary_texture.unwrap_or(finish.texture);
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}:", s.fin_texture_2));
+                    egui::ComboBox::from_id_salt(format!("fin_tex2_{id_prefix}"))
+                        .selected_text(tex_label(tex2))
+                        .show_ui(ui, |ui| {
+                            for tex in [
+                                SurfaceTexture::Smooth,
+                                SurfaceTexture::Plaster,
+                                SurfaceTexture::Brick,
+                                SurfaceTexture::WoodPlanks,
+                                SurfaceTexture::Tile,
+                                SurfaceTexture::Concrete,
+                            ] {
+                                if ui
+                                    .selectable_value(&mut tex2, tex, tex_label(tex))
+                                    .changed()
+                                {
+                                    finish.secondary_texture = Some(tex2);
+                                    changed = true;
+                                }
+                            }
+                        });
+                });
                 ui.horizontal(|ui| {
                     ui.label(format!("{}:", s.fin_color_2));
                     changed |= ui
@@ -2771,6 +3011,50 @@ fn draw_surface_finish_editor(
     changed
 }
 
+fn draw_floor_finish_simple(
+    ui: &mut egui::Ui,
+    s: &crate::i18n::Strings,
+    id_prefix: &str,
+    texture: &mut SurfaceTexture,
+    color: &mut [u8; 3],
+) -> bool {
+    let mut changed = false;
+    let tex_label = |t: SurfaceTexture| -> &'static str {
+        match t {
+            SurfaceTexture::Smooth => s.tex_smooth,
+            SurfaceTexture::Plaster => s.tex_plaster,
+            SurfaceTexture::Brick => s.tex_brick,
+            SurfaceTexture::WoodPlanks => s.tex_wood,
+            SurfaceTexture::Tile => s.tex_tile,
+            SurfaceTexture::Concrete => s.tex_concrete,
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label(format!("{}:", s.fin_texture));
+        egui::ComboBox::from_id_salt(format!("floor_tex_{id_prefix}"))
+            .selected_text(tex_label(*texture))
+            .show_ui(ui, |ui| {
+                for tex in [
+                    SurfaceTexture::WoodPlanks,
+                    SurfaceTexture::Tile,
+                    SurfaceTexture::Concrete,
+                    SurfaceTexture::Smooth,
+                    SurfaceTexture::Plaster,
+                    SurfaceTexture::Brick,
+                ] {
+                    changed |= ui
+                        .selectable_value(texture, tex, tex_label(tex))
+                        .changed();
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label(format!("{}:", s.fin_color_1));
+        changed |= ui.color_edit_button_srgb(color).changed();
+    });
+    changed
+}
+
 fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
     let s = tr(editor.lang);
     draw_navigator_overview(ui, editor);
@@ -2801,11 +3085,79 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             .get(&sig)
             .cloned()
             .unwrap_or_else(SurfaceFinish::default_floor);
-        if draw_surface_finish_editor(ui, s, "room_floor_fin", s.fin_floor, &mut floor_finish, editor.unit_system) {
+        ui.label(egui::RichText::new(s.fin_floor).strong());
+        if draw_floor_finish_simple(
+            ui,
+            s,
+            "room_floor",
+            &mut floor_finish.texture,
+            &mut floor_finish.primary_color,
+        ) {
+            floor_finish.paint_style = PaintStyle::Solid;
             editor.execute_cmd(ProjectCommand::UpdateRoomFinish {
                 signature: sig,
                 finish: floor_finish,
             });
+        }
+    }
+
+    if let Some(zid) = editor.selected_floor_zone_id.clone() {
+        if let Some(mut zone) = editor.project.floor_zones.iter().find(|z| z.id == zid).cloned() {
+            ui.separator();
+            ui.heading(s.floor_zone_title);
+            let mut z_changed = false;
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.object_name));
+                z_changed |= ui.text_edit_singleline(&mut zone.name).changed();
+            });
+            z_changed |= draw_floor_finish_simple(
+                ui,
+                s,
+                &format!("fzone_{zid}"),
+                &mut zone.texture,
+                &mut zone.color,
+            );
+            let u = editor.unit_system;
+            let len_u = u.len_suffix();
+            let mut dx = u.meters_to_display_len(zone.min_x);
+            let mut dy = u.meters_to_display_len(zone.min_y);
+            let mut dw = u.meters_to_display_len((zone.max_x - zone.min_x).max(0.2));
+            let mut dh = u.meters_to_display_len((zone.max_y - zone.min_y).max(0.2));
+            ui.horizontal(|ui| {
+                ui.label("X:");
+                if ui.add(egui::DragValue::new(&mut dx).speed(0.1).fixed_decimals(2).suffix(len_u)).changed() {
+                    let w_m = (zone.max_x - zone.min_x).max(0.2);
+                    zone.min_x = u.display_len_to_meters(dx).clamp(0.0, editor.plan_width - 0.2);
+                    zone.max_x = (zone.min_x + w_m).min(editor.plan_width);
+                    z_changed = true;
+                }
+                ui.label("Y:");
+                if ui.add(egui::DragValue::new(&mut dy).speed(0.1).fixed_decimals(2).suffix(len_u)).changed() {
+                    let h_m = (zone.max_y - zone.min_y).max(0.2);
+                    zone.min_y = u.display_len_to_meters(dy).clamp(0.0, editor.plan_height - 0.2);
+                    zone.max_y = (zone.min_y + h_m).min(editor.plan_height);
+                    z_changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("W:");
+                if ui.add(egui::DragValue::new(&mut dw).speed(0.1).range(0.2..=200.0).fixed_decimals(2).suffix(len_u)).changed() {
+                    zone.max_x = (zone.min_x + u.display_len_to_meters(dw)).min(editor.plan_width);
+                    z_changed = true;
+                }
+                ui.label("H:");
+                if ui.add(egui::DragValue::new(&mut dh).speed(0.1).range(0.2..=200.0).fixed_decimals(2).suffix(len_u)).changed() {
+                    zone.max_y = (zone.min_y + u.display_len_to_meters(dh)).min(editor.plan_height);
+                    z_changed = true;
+                }
+            });
+            if z_changed {
+                editor.execute_cmd(ProjectCommand::UpdateFloorZone(zone));
+            }
+            if ui.button(s.delete_floor_zone).clicked() {
+                editor.execute_cmd(ProjectCommand::RemoveFloorZone { zone_id: zid });
+                editor.selected_floor_zone_id = None;
+            }
         }
     }
 

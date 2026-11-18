@@ -621,6 +621,7 @@ mod tests {
             }],
             room_names: Default::default(),
             room_finishes: Default::default(),
+            floor_zones: Default::default(),
         };
 
         let mut conn = Connection::open_in_memory().unwrap();

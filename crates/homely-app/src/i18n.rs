@@ -130,6 +130,13 @@ pub struct Strings {
     pub paint_opening: &'static str,
     pub paint_twotone: &'static str,
     pub paint_gradient: &'static str,
+    pub fin_texture_2: &'static str,
+    pub tool_select: &'static str,
+    pub tool_draw_wall: &'static str,
+    pub tool_marquee: &'static str,
+    pub tool_floor_zone: &'static str,
+    pub floor_zone_title: &'static str,
+    pub delete_floor_zone: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -254,6 +261,13 @@ static DE: Strings = Strings {
     paint_opening: "Saum um Fenster & Türen",
     paint_twotone: "Mehrfarbig (Geteilt)",
     paint_gradient: "Gradient (Verlauf)",
+    fin_texture_2: "Zweit-/Saumstruktur",
+    tool_select: "Auswählen",
+    tool_draw_wall: "Wand / Punkt",
+    tool_marquee: "Auswahlrechteck",
+    tool_floor_zone: "Bodenfläche",
+    floor_zone_title: "Bodenfläche",
+    delete_floor_zone: "Bodenfläche löschen",
 };
 
 static EN: Strings = Strings {
@@ -371,4 +385,11 @@ static EN: Strings = Strings {
     paint_opening: "Window & Door Trim",
     paint_twotone: "Two-Tone Split",
     paint_gradient: "Gradient",
+    fin_texture_2: "Trim / 2nd Texture",
+    tool_select: "Select",
+    tool_draw_wall: "Wall / Point",
+    tool_marquee: "Selection Box",
+    tool_floor_zone: "Floor Zone",
+    floor_zone_title: "Floor Zone",
+    delete_floor_zone: "Delete Floor Zone",
 };
