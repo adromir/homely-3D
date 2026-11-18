@@ -1483,7 +1483,12 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                                     let toggle_label = if is_curve { s.ctx_to_corner } else { s.ctx_to_curve };
                                     let w = measure_menu_width(
                                         ctx,
-                                        &[toggle_label, s.ctx_continue_wall, s.ctx_delete_point],
+                                        &[
+                                            toggle_label,
+                                            s.ctx_continue_wall,
+                                            s.ctx_move_building,
+                                            s.ctx_delete_point,
+                                        ],
                                     );
                                     ui.set_width(w);
                                     if context_menu_item(ui, toggle_label, w) {
@@ -1506,6 +1511,10 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                                     }
                                     if context_menu_item(ui, s.ctx_continue_wall, w) {
                                         editor.active_draw_from = Some((a.pos_x, a.pos_y));
+                                        close_menu = true;
+                                    }
+                                    if context_menu_item(ui, s.ctx_move_building, w) {
+                                        start_building_drag(editor, wall_id, a.pos_x, a.pos_y, true);
                                         close_menu = true;
                                     }
                                     ui.separator();
