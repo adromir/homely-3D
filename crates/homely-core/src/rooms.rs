@@ -313,6 +313,8 @@ mod tests {
             thickness: 0.24,
             start_height: 2.5,
             end_height: 2.5,
+            side_a_finish: crate::SurfaceFinish::default_wall(),
+            side_b_finish: crate::SurfaceFinish::default_wall(),
             anchors: vec![anchor("a", x0, y0), anchor("b", x1, y1)],
         }
     }

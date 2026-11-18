@@ -492,6 +492,8 @@ mod tests {
             thickness: 0.24,
             start_height: 2.5,
             end_height: 2.5,
+            side_a_finish: crate::SurfaceFinish::default_wall(),
+            side_b_finish: crate::SurfaceFinish::default_wall(),
             anchors: vec![corner("a", 0.0, 0.0), corner("b", 4.0, 0.0)],
         };
         let line = tessellate_wall_centerline(&wall, 0.01);
@@ -522,6 +524,8 @@ mod tests {
             thickness: 0.20,
             start_height: 2.5,
             end_height: 2.5,
+            side_a_finish: crate::SurfaceFinish::default_wall(),
+            side_b_finish: crate::SurfaceFinish::default_wall(),
             anchors: vec![a, b],
         };
         let line = tessellate_wall_centerline(&wall, 0.01);

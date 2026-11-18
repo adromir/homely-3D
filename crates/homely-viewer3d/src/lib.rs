@@ -2,6 +2,7 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -11,8 +12,8 @@ use homely_core::geometry::{
     compute_level_wall_offsets, polyline_length, sample_polyline_at_t, slice_offset_pairs,
     tessellate_wall_centerline, Vec2 as CoreVec2,
 };
-use homely_core::rooms::{detect_rooms, triangulate_polygon};
-use homely_core::{Opening, OpeningType, Project};
+use homely_core::rooms::{detect_rooms, room_signature, triangulate_polygon};
+use homely_core::{Opening, OpeningType, PaintStyle, Project, SurfaceFinish, SurfaceTexture};
 
 /// Bevy plugin that spawns the `Homely 3D — 3D Viewer` window and keeps 3D geometry in sync.
 pub struct Viewer3dPlugin;
@@ -205,6 +206,7 @@ fn rebuild_3d_scene(
     existing: Query<Entity, With<SceneMesh3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     if !state.dirty {
         return;
@@ -228,19 +230,9 @@ fn rebuild_3d_scene(
         Transform::from_xyz(pw * 0.5, 0.0, ph * 0.5),
     ));
 
-    let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.86, 0.85, 0.82),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
     let selected_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.45, 0.72, 0.95),
         perceptual_roughness: 0.6,
-        ..default()
-    });
-    let floor_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.55, 0.47, 0.38),
-        perceptual_roughness: 0.75,
         ..default()
     });
     let door_mat = materials.add(StandardMaterial {
@@ -270,10 +262,24 @@ fn rebuild_3d_scene(
             if tris.is_empty() {
                 continue;
             }
+            let sig = room_signature(&room.polygon);
+            let floor_finish = state
+                .project
+                .room_finishes
+                .get(&sig)
+                .cloned()
+                .unwrap_or_else(SurfaceFinish::default_floor);
+            let floor_mat = create_finish_material(&floor_finish, 2.5, true, &mut images, &mut materials);
+
             let positions: Vec<[f32; 3]> = room
                 .polygon
                 .iter()
                 .map(|p| [p.x as f32, level_elev + 0.01, p.y as f32])
+                .collect();
+            let uvs: Vec<[f32; 2]> = room
+                .polygon
+                .iter()
+                .map(|p| [(p.x as f32) * 0.5, (p.y as f32) * 0.5])
                 .collect();
             let mut indices = Vec::with_capacity(tris.len() * 3);
             for tri in tris {
@@ -284,6 +290,7 @@ fn rebuild_3d_scene(
                 RenderAssetUsages::default(),
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
             mesh.insert_indices(Indices::U32(indices));
             mesh.duplicate_vertices();
             mesh.compute_flat_normals();
@@ -291,7 +298,7 @@ fn rebuild_3d_scene(
             commands.spawn((
                 SceneMesh3d,
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(floor_mat.clone()),
+                MeshMaterial3d(floor_mat),
                 Transform::IDENTITY,
             ));
         }
@@ -302,14 +309,45 @@ fn rebuild_3d_scene(
                 continue;
             }
             let is_selected = state.selected_wall_id.as_deref() == Some(&wall.id);
-            let mat = if is_selected {
-                selected_mat.clone()
+            let y_bot = level_elev;
+            let wall_h = ((wall.start_height + wall.end_height) * 0.5).max(0.2) as f32;
+            let y_top = level_elev + wall_h;
+
+            let (mat_a, mat_b, mat_cap) = if is_selected {
+                (selected_mat.clone(), selected_mat.clone(), selected_mat.clone())
             } else {
-                wall_mat.clone()
+                let ma = create_finish_material(&wall.side_a_finish, wall_h, false, &mut images, &mut materials);
+                let mb = create_finish_material(&wall.side_b_finish, wall_h, false, &mut images, &mut materials);
+                let mc = materials.add(StandardMaterial {
+                    base_color: Color::srgb_u8(
+                        wall.side_a_finish.primary_color[0],
+                        wall.side_a_finish.primary_color[1],
+                        wall.side_a_finish.primary_color[2],
+                    ),
+                    perceptual_roughness: 0.85,
+                    ..default()
+                });
+                (ma, mb, mc)
             };
 
-            let y_bot = level_elev;
-            let y_top = level_elev + ((wall.start_height + wall.end_height) * 0.5) as f32;
+            let spawn_wall_meshes = |commands: &mut Commands,
+                                     meshes: &mut Assets<Mesh>,
+                                     sub_pairs: &[(CoreVec2, CoreVec2)],
+                                     yb: f32,
+                                     yt: f32,
+                                     closed: bool| {
+                let (m_a, m_b, m_cap) = build_mitered_wall_meshes(sub_pairs, yb, yt, y_bot, y_top, closed);
+                if let Some(m) = m_a {
+                    commands.spawn((SceneMesh3d, Mesh3d(meshes.add(m)), MeshMaterial3d(mat_a.clone()), Transform::IDENTITY));
+                }
+                if let Some(m) = m_b {
+                    commands.spawn((SceneMesh3d, Mesh3d(meshes.add(m)), MeshMaterial3d(mat_b.clone()), Transform::IDENTITY));
+                }
+                if let Some(m) = m_cap {
+                    commands.spawn((SceneMesh3d, Mesh3d(meshes.add(m)), MeshMaterial3d(mat_cap.clone()), Transform::IDENTITY));
+                }
+            };
+
             let centerline = tessellate_wall_centerline(wall, 0.02);
             let total_len = polyline_length(&centerline);
 
@@ -321,14 +359,7 @@ fn rebuild_3d_scene(
                 .collect();
 
             if wall_openings.is_empty() || total_len < 1e-4 {
-                if let Some(mesh) = build_mitered_wall_mesh(pairs, y_bot, y_top, wall.is_closed_loop) {
-                    commands.spawn((
-                        SceneMesh3d,
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(mat),
-                        Transform::IDENTITY,
-                    ));
-                }
+                spawn_wall_meshes(&mut commands, &mut meshes, pairs, y_bot, y_top, wall.is_closed_loop);
                 continue;
             }
 
@@ -344,14 +375,7 @@ fn rebuild_3d_scene(
                 // Solid wall before opening
                 if t0 - cursor_t > 1e-4 {
                     let sub_pairs = slice_offset_pairs(&centerline, pairs, cursor_t, t0);
-                    if let Some(mesh) = build_mitered_wall_mesh(&sub_pairs, y_bot, y_top, false) {
-                        commands.spawn((
-                            SceneMesh3d,
-                            Mesh3d(meshes.add(mesh)),
-                            MeshMaterial3d(mat.clone()),
-                            Transform::IDENTITY,
-                        ));
-                    }
+                    spawn_wall_meshes(&mut commands, &mut meshes, &sub_pairs, y_bot, y_top, false);
                 }
 
                 // Sill below opening + Lintel above opening
@@ -361,27 +385,13 @@ fn rebuild_3d_scene(
                     let op_top = (op_bot + op.height as f32).clamp(op_bot, y_top);
 
                     if op_bot - y_bot > 0.01 {
-                        if let Some(mesh) = build_mitered_wall_mesh(&op_pairs, y_bot, op_bot, false) {
-                            commands.spawn((
-                                SceneMesh3d,
-                                Mesh3d(meshes.add(mesh)),
-                                MeshMaterial3d(mat.clone()),
-                                Transform::IDENTITY,
-                            ));
-                        }
+                        spawn_wall_meshes(&mut commands, &mut meshes, &op_pairs, y_bot, op_bot, false);
                     }
                     if y_top - op_top > 0.01 {
-                        if let Some(mesh) = build_mitered_wall_mesh(&op_pairs, op_top, y_top, false) {
-                            commands.spawn((
-                                SceneMesh3d,
-                                Mesh3d(meshes.add(mesh)),
-                                MeshMaterial3d(mat.clone()),
-                                Transform::IDENTITY,
-                            ));
-                        }
+                        spawn_wall_meshes(&mut commands, &mut meshes, &op_pairs, op_top, y_top, false);
                     }
 
-                    // Door leaf or Window glass pane inside opening
+                    // Door leaf / Window glass pane + optional OpeningTrim casing
                     if let Some((mid, dir)) = sample_polyline_at_t(&centerline, (t0 + t1) * 0.5) {
                         let op_h = (op_top - op_bot).max(0.05);
                         let op_w = ((t1 - t0) * total_len) as f32;
@@ -400,6 +410,47 @@ fn rebuild_3d_scene(
                                     .with_rotation(Quat::from_rotation_y(angle)),
                             ));
                         }
+
+                        // OpeningTrim casing around doors/windows
+                        if wall.side_a_finish.paint_style == PaintStyle::OpeningTrim
+                            || wall.side_b_finish.paint_style == PaintStyle::OpeningTrim
+                        {
+                            let trim_col = if wall.side_a_finish.paint_style == PaintStyle::OpeningTrim {
+                                wall.side_a_finish.secondary_color
+                            } else {
+                                wall.side_b_finish.secondary_color
+                            };
+                            let trim_mat = materials.add(StandardMaterial {
+                                base_color: Color::srgb_u8(trim_col[0], trim_col[1], trim_col[2]),
+                                perceptual_roughness: 0.55,
+                                ..default()
+                            });
+                            let tw = wall.side_a_finish.trim_width_m.clamp(0.04, 0.25);
+                            let casing_d = (wall.thickness as f32) + 0.03;
+                            let rot = Quat::from_rotation_y(angle);
+                            let right_dir = Vec3::new(dir.x as f32, 0.0, dir.y as f32).normalize_or_zero();
+                            let cx = mid.x as f32;
+                            let cz = mid.y as f32;
+
+                            // Top lintel casing
+                            commands.spawn((
+                                SceneMesh3d,
+                                Mesh3d(meshes.add(Cuboid::new(op_w + tw * 2.0, tw, casing_d))),
+                                MeshMaterial3d(trim_mat.clone()),
+                                Transform::from_xyz(cx, op_top + tw * 0.5, cz).with_rotation(rot),
+                            ));
+                            // Left & right jamb casings
+                            for sign in [-1.0_f32, 1.0_f32] {
+                                let off = right_dir * (sign * (op_w * 0.5 + tw * 0.5));
+                                commands.spawn((
+                                    SceneMesh3d,
+                                    Mesh3d(meshes.add(Cuboid::new(tw, op_h, casing_d))),
+                                    MeshMaterial3d(trim_mat.clone()),
+                                    Transform::from_xyz(cx + off.x, op_bot + op_h * 0.5, cz + off.z)
+                                        .with_rotation(rot),
+                                ));
+                            }
+                        }
                     }
                 }
 
@@ -409,14 +460,7 @@ fn rebuild_3d_scene(
             // Solid wall after last opening
             if 1.0 - cursor_t > 1e-4 {
                 let tail_pairs = slice_offset_pairs(&centerline, pairs, cursor_t, 1.0);
-                if let Some(mesh) = build_mitered_wall_mesh(&tail_pairs, y_bot, y_top, false) {
-                    commands.spawn((
-                        SceneMesh3d,
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(mat),
-                        Transform::IDENTITY,
-                    ));
-                }
+                spawn_wall_meshes(&mut commands, &mut meshes, &tail_pairs, y_bot, y_top, false);
             }
         }
     }
@@ -737,33 +781,244 @@ fn update_3d_camera_and_visibility(
     *transform = orbit.transform();
 }
 
-fn build_mitered_wall_mesh(
+fn create_finish_material(
+    finish: &SurfaceFinish,
+    wall_height: f32,
+    is_floor: bool,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Handle<StandardMaterial> {
+    let size = 128u32;
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    let c1 = [
+        finish.primary_color[0] as f32,
+        finish.primary_color[1] as f32,
+        finish.primary_color[2] as f32,
+    ];
+    let c2 = [
+        finish.secondary_color[0] as f32,
+        finish.secondary_color[1] as f32,
+        finish.secondary_color[2] as f32,
+    ];
+    let trim_frac = (finish.trim_width_m / wall_height.max(0.5)).clamp(0.02, 0.45);
+
+    for py in 0..size {
+        // v = 0 at top of image (y_top on walls), 1 at bottom of image (y_bot on walls)
+        let v_top_down = (py as f32 + 0.5) / size as f32;
+        let h_frac = 1.0 - v_top_down; // 0 = floor/bottom, 1 = ceiling/top
+
+        for px in 0..size {
+            let u = (px as f32 + 0.5) / size as f32;
+
+            // Deterministic pseudo-noise for organic surface textures
+            let hash = ((px.wrapping_mul(374761393) ^ py.wrapping_mul(668265263))
+                .wrapping_mul(1274126177))
+                >> 24;
+            let noise = (hash as f32) / 255.0 - 0.5;
+
+            let tex_factor = match finish.texture {
+                SurfaceTexture::Smooth => 1.0 + noise * 0.03,
+                SurfaceTexture::Plaster => 1.0 + noise * 0.14,
+                SurfaceTexture::Brick => {
+                    let row = (py / 16) % 2;
+                    let bx = (px + row * 16) % 32;
+                    let by = py % 16;
+                    if bx < 2 || by < 2 {
+                        0.72 + noise * 0.05
+                    } else {
+                        0.96 + noise * 0.08
+                    }
+                }
+                SurfaceTexture::WoodPlanks => {
+                    let plank = py / 16;
+                    let seam = py % 16 == 0 || ((px + plank * 37) % 64 == 0);
+                    let grain = ((px as f32 * 0.12 + plank as f32 * 1.7).sin()) * 0.04;
+                    if seam {
+                        0.74
+                    } else {
+                        0.98 + grain + noise * 0.05
+                    }
+                }
+                SurfaceTexture::Tile => {
+                    if px % 32 < 2 || py % 32 < 2 {
+                        0.76
+                    } else {
+                        1.0 + noise * 0.03
+                    }
+                }
+                SurfaceTexture::Concrete => {
+                    let panel_seam = px == 0 || py % 64 == 0;
+                    if panel_seam {
+                        0.82
+                    } else {
+                        0.96 + noise * 0.11
+                    }
+                }
+            };
+
+            let base_rgb = if is_floor {
+                match finish.paint_style {
+                    PaintStyle::Solid | PaintStyle::OpeningTrim => c1,
+                    PaintStyle::BaseboardTrim | PaintStyle::CrownTrim => {
+                        if u < trim_frac * 0.5
+                            || u > 1.0 - trim_frac * 0.5
+                            || v_top_down < trim_frac * 0.5
+                            || v_top_down > 1.0 - trim_frac * 0.5
+                        {
+                            c2
+                        } else {
+                            c1
+                        }
+                    }
+                    PaintStyle::TwoTone => {
+                        if ((px / 32) + (py / 32)) % 2 == 0 {
+                            c1
+                        } else {
+                            c2
+                        }
+                    }
+                    PaintStyle::Gradient => {
+                        let t = (u + v_top_down) * 0.5;
+                        [
+                            c1[0] * (1.0 - t) + c2[0] * t,
+                            c1[1] * (1.0 - t) + c2[1] * t,
+                            c1[2] * (1.0 - t) + c2[2] * t,
+                        ]
+                    }
+                }
+            } else {
+                match finish.paint_style {
+                    PaintStyle::Solid | PaintStyle::OpeningTrim => c1,
+                    PaintStyle::BaseboardTrim => {
+                        if h_frac <= trim_frac {
+                            c2
+                        } else if (h_frac - trim_frac).abs() < 0.012 {
+                            [c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85]
+                        } else {
+                            c1
+                        }
+                    }
+                    PaintStyle::CrownTrim => {
+                        if h_frac >= 1.0 - trim_frac {
+                            c2
+                        } else if (h_frac - (1.0 - trim_frac)).abs() < 0.012 {
+                            [c2[0] * 0.85, c2[1] * 0.85, c2[2] * 0.85]
+                        } else {
+                            c1
+                        }
+                    }
+                    PaintStyle::TwoTone => {
+                        if h_frac < 0.45 {
+                            c2
+                        } else if (h_frac - 0.45).abs() < 0.015 {
+                            [c2[0] * 0.82, c2[1] * 0.82, c2[2] * 0.82]
+                        } else {
+                            c1
+                        }
+                    }
+                    PaintStyle::Gradient => [
+                        c2[0] * (1.0 - h_frac) + c1[0] * h_frac,
+                        c2[1] * (1.0 - h_frac) + c1[1] * h_frac,
+                        c2[2] * (1.0 - h_frac) + c1[2] * h_frac,
+                    ],
+                }
+            };
+
+            data.push((base_rgb[0] * tex_factor).clamp(0.0, 255.0) as u8);
+            data.push((base_rgb[1] * tex_factor).clamp(0.0, 255.0) as u8);
+            data.push((base_rgb[2] * tex_factor).clamp(0.0, 255.0) as u8);
+            data.push(255);
+        }
+    }
+
+    let mut img = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: if is_floor {
+            ImageAddressMode::Repeat
+        } else {
+            ImageAddressMode::ClampToEdge
+        },
+        ..default()
+    });
+    let tex = images.add(img);
+    let roughness = match finish.texture {
+        SurfaceTexture::Tile => 0.35,
+        SurfaceTexture::Smooth => 0.65,
+        SurfaceTexture::WoodPlanks => 0.60,
+        SurfaceTexture::Plaster | SurfaceTexture::Concrete => 0.85,
+        SurfaceTexture::Brick => 0.90,
+    };
+    materials.add(StandardMaterial {
+        base_color_texture: Some(tex),
+        perceptual_roughness: roughness,
+        ..default()
+    })
+}
+
+fn build_mitered_wall_meshes(
     pairs: &[(CoreVec2, CoreVec2)],
     y_bot: f32,
     y_top: f32,
+    wall_y_bot: f32,
+    wall_y_top: f32,
     is_closed: bool,
-) -> Option<Mesh> {
+) -> (Option<Mesh>, Option<Mesh>, Option<Mesh>) {
     if pairs.len() < 2 {
-        return None;
+        return (None, None, None);
     }
 
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    let wall_h = (wall_y_top - wall_y_bot).max(0.01);
+    let v_bot = 1.0 - ((y_bot - wall_y_bot) / wall_h).clamp(0.0, 1.0);
+    let v_top = 1.0 - ((y_top - wall_y_bot) / wall_h).clamp(0.0, 1.0);
+
+    let mut pos_a: Vec<[f32; 3]> = Vec::new();
+    let mut uv_a: Vec<[f32; 2]> = Vec::new();
+    let mut idx_a: Vec<u32> = Vec::new();
+
+    let mut pos_b: Vec<[f32; 3]> = Vec::new();
+    let mut uv_b: Vec<[f32; 2]> = Vec::new();
+    let mut idx_b: Vec<u32> = Vec::new();
+
+    let mut pos_cap: Vec<[f32; 3]> = Vec::new();
+    let mut uv_cap: Vec<[f32; 2]> = Vec::new();
+    let mut idx_cap: Vec<u32> = Vec::new();
 
     let push_quad = |positions: &mut Vec<[f32; 3]>,
+                     uvs: &mut Vec<[f32; 2]>,
                      indices: &mut Vec<u32>,
                      a: [f32; 3],
                      b: [f32; 3],
                      c: [f32; 3],
-                     d: [f32; 3]| {
+                     d: [f32; 3],
+                     ua: [f32; 2],
+                     ub: [f32; 2],
+                     uc: [f32; 2],
+                     ud: [f32; 2]| {
         let base = positions.len() as u32;
         positions.extend_from_slice(&[a, b, c, d]);
+        uvs.extend_from_slice(&[ua, ub, uc, ud]);
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
 
+    let mut u_acc = 0.0_f32;
     for win in pairs.windows(2) {
         let (l0, r0) = win[0];
         let (l1, r1) = win[1];
+        let seg_len = (((l1.x - l0.x).powi(2) + (l1.y - l0.y).powi(2)).sqrt() as f32) * 0.5;
+        let u0 = u_acc;
+        let u1 = u_acc + seg_len;
+        u_acc = u1;
 
         let bl0 = [l0.x as f32, y_bot, l0.y as f32];
         let br0 = [r0.x as f32, y_bot, r0.y as f32];
@@ -775,10 +1030,29 @@ fn build_mitered_wall_mesh(
         let tl1 = [l1.x as f32, y_top, l1.y as f32];
         let tr1 = [r1.x as f32, y_top, r1.y as f32];
 
-        push_quad(&mut positions, &mut indices, tl0, tl1, tr1, tr0);
-        push_quad(&mut positions, &mut indices, bl0, bl1, tl1, tl0);
-        push_quad(&mut positions, &mut indices, br1, br0, tr0, tr1);
-        push_quad(&mut positions, &mut indices, br0, br1, bl1, bl0);
+        // Side A (left face)
+        push_quad(
+            &mut pos_a, &mut uv_a, &mut idx_a,
+            bl0, bl1, tl1, tl0,
+            [u0, v_bot], [u1, v_bot], [u1, v_top], [u0, v_top],
+        );
+        // Side B (right face)
+        push_quad(
+            &mut pos_b, &mut uv_b, &mut idx_b,
+            br1, br0, tr0, tr1,
+            [u1, v_bot], [u0, v_bot], [u0, v_top], [u1, v_top],
+        );
+        // Top & bottom caps
+        push_quad(
+            &mut pos_cap, &mut uv_cap, &mut idx_cap,
+            tl0, tl1, tr1, tr0,
+            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        );
+        push_quad(
+            &mut pos_cap, &mut uv_cap, &mut idx_cap,
+            br0, br1, bl1, bl0,
+            [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        );
     }
 
     let joined_ends = pairs.len() >= 3 && {
@@ -792,30 +1066,42 @@ fn build_mitered_wall_mesh(
         let (l0, r0) = pairs[0];
         let (ln, rn) = pairs[pairs.len() - 1];
         push_quad(
-            &mut positions,
-            &mut indices,
+            &mut pos_cap, &mut uv_cap, &mut idx_cap,
             [r0.x as f32, y_bot, r0.y as f32],
             [l0.x as f32, y_bot, l0.y as f32],
             [l0.x as f32, y_top, l0.y as f32],
             [r0.x as f32, y_top, r0.y as f32],
+            [0.0, v_bot], [1.0, v_bot], [1.0, v_top], [0.0, v_top],
         );
         push_quad(
-            &mut positions,
-            &mut indices,
+            &mut pos_cap, &mut uv_cap, &mut idx_cap,
             [ln.x as f32, y_bot, ln.y as f32],
             [rn.x as f32, y_bot, rn.y as f32],
             [rn.x as f32, y_top, rn.y as f32],
             [ln.x as f32, y_top, ln.y as f32],
+            [0.0, v_bot], [1.0, v_bot], [1.0, v_top], [0.0, v_top],
         );
     }
 
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(Indices::U32(indices));
-    mesh.duplicate_vertices();
-    mesh.compute_flat_normals();
-    Some(mesh)
+    let finalize = |positions: Vec<[f32; 3]>, uvs: Vec<[f32; 2]>, indices: Vec<u32>| -> Option<Mesh> {
+        if indices.is_empty() {
+            return None;
+        }
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_indices(Indices::U32(indices));
+        mesh.duplicate_vertices();
+        mesh.compute_flat_normals();
+        Some(mesh)
+    };
+
+    (
+        finalize(pos_a, uv_a, idx_a),
+        finalize(pos_b, uv_b, idx_b),
+        finalize(pos_cap, uv_cap, idx_cap),
+    )
 }

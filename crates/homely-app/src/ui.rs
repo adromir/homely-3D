@@ -21,8 +21,8 @@ use homely_core::rooms::{
 };
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{
-    BuildingPreset, CatalogCategory, CatalogItem, Opening, OpeningType, PointType, UnitSystem,
-    Wall, WallAnchorPoint, METERS_PER_FOOT,
+    BuildingPreset, CatalogCategory, CatalogItem, Opening, OpeningType, PaintStyle, PointType,
+    SurfaceFinish, SurfaceTexture, UnitSystem, Wall, WallAnchorPoint, METERS_PER_FOOT,
 };
 use std::path::Path;
 
@@ -1344,6 +1344,8 @@ fn split_wall_at_point(editor: &mut EditorState, wall_id: &str, sx: f64, sy: f64
         thickness: wall.thickness,
         start_height: wall.start_height,
         end_height: wall.end_height,
+        side_a_finish: wall.side_a_finish.clone(),
+        side_b_finish: wall.side_b_finish.clone(),
         anchors: vec![a0, corner(&mid_id1, sx, sy)],
     };
     let w2 = Wall {
@@ -1354,6 +1356,8 @@ fn split_wall_at_point(editor: &mut EditorState, wall_id: &str, sx: f64, sy: f64
         thickness: wall.thickness,
         start_height: wall.start_height,
         end_height: wall.end_height,
+        side_a_finish: wall.side_a_finish,
+        side_b_finish: wall.side_b_finish,
         anchors: vec![corner(&mid_id2, sx, sy), a1],
     };
 
@@ -1596,6 +1600,8 @@ fn delete_selected_point(editor: &mut EditorState) {
             thickness: w1.thickness,
             start_height: w1.start_height,
             end_height: w1.end_height,
+            side_a_finish: w1.side_a_finish,
+            side_b_finish: w1.side_b_finish,
             anchors: vec![other1, other2],
         };
         editor.execute_cmd(ProjectCommand::Batch(vec![
@@ -2629,6 +2635,142 @@ fn draw_project_dialog(ctx: &egui::Context, editor: &mut EditorState) {
     }
 }
 
+fn draw_surface_finish_editor(
+    ui: &mut egui::Ui,
+    s: &crate::i18n::Strings,
+    id_prefix: &str,
+    title: &str,
+    finish: &mut SurfaceFinish,
+    unit_sys: UnitSystem,
+) -> bool {
+    let mut changed = false;
+    let tex_label = |t: SurfaceTexture| -> &'static str {
+        match t {
+            SurfaceTexture::Smooth => s.tex_smooth,
+            SurfaceTexture::Plaster => s.tex_plaster,
+            SurfaceTexture::Brick => s.tex_brick,
+            SurfaceTexture::WoodPlanks => s.tex_wood,
+            SurfaceTexture::Tile => s.tex_tile,
+            SurfaceTexture::Concrete => s.tex_concrete,
+        }
+    };
+    let paint_label = |p: PaintStyle| -> &'static str {
+        match p {
+            PaintStyle::Solid => s.paint_solid,
+            PaintStyle::BaseboardTrim => s.paint_baseboard,
+            PaintStyle::CrownTrim => s.paint_crown,
+            PaintStyle::OpeningTrim => s.paint_opening,
+            PaintStyle::TwoTone => s.paint_twotone,
+            PaintStyle::Gradient => s.paint_gradient,
+        }
+    };
+
+    egui::CollapsingHeader::new(title)
+        .id_salt(format!("fin_hdr_{id_prefix}"))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.fin_texture));
+                egui::ComboBox::from_id_salt(format!("fin_tex_{id_prefix}"))
+                    .selected_text(tex_label(finish.texture))
+                    .show_ui(ui, |ui| {
+                        for tex in [
+                            SurfaceTexture::Smooth,
+                            SurfaceTexture::Plaster,
+                            SurfaceTexture::Brick,
+                            SurfaceTexture::WoodPlanks,
+                            SurfaceTexture::Tile,
+                            SurfaceTexture::Concrete,
+                        ] {
+                            changed |= ui
+                                .selectable_value(&mut finish.texture, tex, tex_label(tex))
+                                .changed();
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.fin_paint_style));
+                egui::ComboBox::from_id_salt(format!("fin_paint_{id_prefix}"))
+                    .selected_text(paint_label(finish.paint_style))
+                    .show_ui(ui, |ui| {
+                        for ps in [
+                            PaintStyle::Solid,
+                            PaintStyle::BaseboardTrim,
+                            PaintStyle::CrownTrim,
+                            PaintStyle::OpeningTrim,
+                            PaintStyle::TwoTone,
+                            PaintStyle::Gradient,
+                        ] {
+                            changed |= ui
+                                .selectable_value(&mut finish.paint_style, ps, paint_label(ps))
+                                .changed();
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.fin_color_1));
+                changed |= ui.color_edit_button_srgb(&mut finish.primary_color).changed();
+            });
+
+            if finish.paint_style != PaintStyle::Solid {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}:", s.fin_color_2));
+                    changed |= ui
+                        .color_edit_button_srgb(&mut finish.secondary_color)
+                        .changed();
+                });
+            }
+
+            if matches!(
+                finish.paint_style,
+                PaintStyle::BaseboardTrim | PaintStyle::CrownTrim | PaintStyle::OpeningTrim
+            ) {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}:", s.fin_trim_width));
+                    match unit_sys {
+                        UnitSystem::Metric => {
+                            let mut cm = finish.trim_width_m * 100.0;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut cm)
+                                        .speed(0.5)
+                                        .range(3.0..=50.0)
+                                        .fixed_decimals(1)
+                                        .suffix(" cm"),
+                                )
+                                .changed()
+                            {
+                                finish.trim_width_m = cm / 100.0;
+                                changed = true;
+                            }
+                        }
+                        UnitSystem::Imperial => {
+                            let mut inches =
+                                UnitSystem::meters_to_inches(finish.trim_width_m as f64) as f32;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut inches)
+                                        .speed(0.25)
+                                        .range(1.0..=20.0)
+                                        .fixed_decimals(1)
+                                        .suffix(" in"),
+                                )
+                                .changed()
+                            {
+                                finish.trim_width_m =
+                                    UnitSystem::inches_to_meters(inches as f64) as f32;
+                                changed = true;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    changed
+}
+
 fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
     let s = tr(editor.lang);
     draw_navigator_overview(ui, editor);
@@ -2648,11 +2790,23 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             ui.label(format!("{}:", s.object_name));
             if ui.text_edit_singleline(&mut r_name).changed() {
                 editor.execute_cmd(ProjectCommand::RenameRoom {
-                    signature: sig,
+                    signature: sig.clone(),
                     name: r_name,
                 });
             }
         });
+        let mut floor_finish = editor
+            .project
+            .room_finishes
+            .get(&sig)
+            .cloned()
+            .unwrap_or_else(SurfaceFinish::default_floor);
+        if draw_surface_finish_editor(ui, s, "room_floor_fin", s.fin_floor, &mut floor_finish, editor.unit_system) {
+            editor.execute_cmd(ProjectCommand::UpdateRoomFinish {
+                signature: sig,
+                finish: floor_finish,
+            });
+        }
     }
 
     if let Some(sel_id) = editor.selected_wall_id.clone() {
@@ -2728,6 +2882,37 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                     start_height: start_h,
                     end_height: end_h,
                     is_closed_loop: wall.is_closed_loop,
+                });
+            }
+
+            let mut side_a = wall.side_a_finish.clone();
+            let mut side_b = wall.side_b_finish.clone();
+            let mut finish_changed = false;
+            finish_changed |= draw_surface_finish_editor(
+                ui,
+                s,
+                &format!("wall_{}_a", wall.id),
+                s.fin_side_a,
+                &mut side_a,
+                unit_sys,
+            );
+            finish_changed |= draw_surface_finish_editor(
+                ui,
+                s,
+                &format!("wall_{}_b", wall.id),
+                s.fin_side_b,
+                &mut side_b,
+                unit_sys,
+            );
+            if ui.button(s.fin_swap_sides).clicked() {
+                std::mem::swap(&mut side_a, &mut side_b);
+                finish_changed = true;
+            }
+            if finish_changed {
+                editor.execute_cmd(ProjectCommand::UpdateWallFinish {
+                    wall_id: wall.id.clone(),
+                    side_a,
+                    side_b,
                 });
             }
 

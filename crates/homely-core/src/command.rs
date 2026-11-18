@@ -1,6 +1,8 @@
 //! Command pattern and undo/redo transaction history for [`Project`].
 
-use crate::{CoreError, FurnitureItem, Level, Opening, Project, Wall, WallAnchorPoint};
+use crate::{
+    CoreError, FurnitureItem, Level, Opening, Project, SurfaceFinish, Wall, WallAnchorPoint,
+};
 use serde::{Deserialize, Serialize};
 
 /// Reversible mutation command applied to a [`Project`].
@@ -42,6 +44,15 @@ pub enum ProjectCommand {
     RenameRoom {
         signature: String,
         name: String,
+    },
+    UpdateWallFinish {
+        wall_id: String,
+        side_a: SurfaceFinish,
+        side_b: SurfaceFinish,
+    },
+    UpdateRoomFinish {
+        signature: String,
+        finish: SurfaceFinish,
     },
     AddOpening(Opening),
     UpdateOpening(Opening),
@@ -86,6 +97,8 @@ impl ProjectCommand {
             Self::UpdateWallProperties { wall_id, .. } => format!("Edit Wall {wall_id}"),
             Self::RenameWall { wall_id, name } => format!("Rename {wall_id} -> {name}"),
             Self::RenameRoom { name, .. } => format!("Rename Room -> {name}"),
+            Self::UpdateWallFinish { wall_id, .. } => format!("Paint Wall {wall_id}"),
+            Self::UpdateRoomFinish { .. } => "Paint Room Floor".into(),
             Self::AddOpening(o) => format!("Add Opening {}", o.id),
             Self::UpdateOpening(o) => format!("Edit Opening {}", o.id),
             Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
@@ -261,6 +274,41 @@ impl ProjectCommand {
                 Ok(Self::RenameRoom {
                     signature: signature.clone(),
                     name: prev,
+                })
+            }
+            Self::UpdateWallFinish {
+                wall_id,
+                side_a,
+                side_b,
+            } => {
+                let wall = project
+                    .walls
+                    .iter_mut()
+                    .find(|w| w.id == *wall_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "wall",
+                        id: wall_id.clone(),
+                    })?;
+                let prev_a = std::mem::replace(&mut wall.side_a_finish, side_a.clone());
+                let prev_b = std::mem::replace(&mut wall.side_b_finish, side_b.clone());
+                Ok(Self::UpdateWallFinish {
+                    wall_id: wall_id.clone(),
+                    side_a: prev_a,
+                    side_b: prev_b,
+                })
+            }
+            Self::UpdateRoomFinish { signature, finish } => {
+                let prev = project
+                    .room_finishes
+                    .get(signature)
+                    .cloned()
+                    .unwrap_or_else(SurfaceFinish::default_floor);
+                project
+                    .room_finishes
+                    .insert(signature.clone(), finish.clone());
+                Ok(Self::UpdateRoomFinish {
+                    signature: signature.clone(),
+                    finish: prev,
                 })
             }
             Self::AddOpening(opening) => {
@@ -529,6 +577,8 @@ mod tests {
             thickness: 0.24,
             start_height: 2.5,
             end_height: 2.5,
+            side_a_finish: SurfaceFinish::default_wall(),
+            side_b_finish: SurfaceFinish::default_wall(),
             anchors: vec![WallAnchorPoint {
                 id: "a-1".into(),
                 pos_x: 0.0,

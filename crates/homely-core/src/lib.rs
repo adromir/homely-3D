@@ -371,6 +371,70 @@ pub struct Opening {
     pub ha_entity_id: Option<String>,
 }
 
+/// Procedural surface texture pattern for walls and floors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceTexture {
+    #[default]
+    Smooth,
+    Plaster,
+    Brick,
+    WoodPlanks,
+    Tile,
+    Concrete,
+}
+
+/// Painter / trim style applied to a wall or floor surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaintStyle {
+    #[default]
+    Solid,
+    BaseboardTrim,
+    CrownTrim,
+    OpeningTrim,
+    TwoTone,
+    Gradient,
+}
+
+/// Tintable surface texture and paint finish for one wall face or room floor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SurfaceFinish {
+    pub texture: SurfaceTexture,
+    pub paint_style: PaintStyle,
+    pub primary_color: [u8; 3],
+    pub secondary_color: [u8; 3],
+    pub trim_width_m: f32,
+}
+
+impl SurfaceFinish {
+    pub fn default_wall() -> Self {
+        Self {
+            texture: SurfaceTexture::Plaster,
+            paint_style: PaintStyle::Solid,
+            primary_color: [222, 219, 212],
+            secondary_color: [248, 248, 246],
+            trim_width_m: 0.12,
+        }
+    }
+
+    pub fn default_floor() -> Self {
+        Self {
+            texture: SurfaceTexture::WoodPlanks,
+            paint_style: PaintStyle::Solid,
+            primary_color: [162, 128, 92],
+            secondary_color: [120, 90, 60],
+            trim_width_m: 0.12,
+        }
+    }
+}
+
+impl Default for SurfaceFinish {
+    fn default() -> Self {
+        Self::default_wall()
+    }
+}
+
 /// A poly-Bezier wall belonging to a building level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Wall {
@@ -382,6 +446,10 @@ pub struct Wall {
     pub start_height: f64,
     pub end_height: f64,
     pub anchors: Vec<WallAnchorPoint>,
+    #[serde(default = "SurfaceFinish::default_wall")]
+    pub side_a_finish: SurfaceFinish,
+    #[serde(default = "SurfaceFinish::default_wall")]
+    pub side_b_finish: SurfaceFinish,
 }
 
 /// A building story / level.
@@ -452,4 +520,6 @@ pub struct Project {
     pub openings: Vec<Opening>,
     pub furniture: Vec<FurnitureItem>,
     pub room_names: BTreeMap<String, String>,
+    #[serde(default)]
+    pub room_finishes: BTreeMap<String, SurfaceFinish>,
 }

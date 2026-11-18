@@ -424,6 +424,8 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             start_height,
             end_height,
             anchors,
+            side_a_finish: crate::SurfaceFinish::default_wall(),
+            side_b_finish: crate::SurfaceFinish::default_wall(),
         });
     }
 
@@ -560,6 +562,8 @@ mod tests {
                 thickness: 0.24,
                 start_height: 2.6,
                 end_height: 2.6,
+                side_a_finish: crate::SurfaceFinish::default_wall(),
+                side_b_finish: crate::SurfaceFinish::default_wall(),
                 anchors: vec![
                     WallAnchorPoint {
                         id: "a1".into(),
@@ -616,6 +620,7 @@ mod tests {
                 ha_binding_json: None,
             }],
             room_names: Default::default(),
+            room_finishes: Default::default(),
         };
 
         let mut conn = Connection::open_in_memory().unwrap();

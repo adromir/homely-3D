@@ -148,6 +148,8 @@ impl Default for EditorState {
             thickness: 0.24,
             start_height: 2.6,
             end_height: 2.6,
+            side_a_finish: homely_core::SurfaceFinish::default_wall(),
+            side_b_finish: homely_core::SurfaceFinish::default_wall(),
             anchors: vec![corner("a-1", 2.0, 2.0), corner("a-2", 7.0, 2.0)],
         };
         let wall2 = Wall {
@@ -158,6 +160,8 @@ impl Default for EditorState {
             thickness: 0.24,
             start_height: 2.6,
             end_height: 2.6,
+            side_a_finish: homely_core::SurfaceFinish::default_wall(),
+            side_b_finish: homely_core::SurfaceFinish::default_wall(),
             anchors: vec![
                 corner("a-3", 7.0, 2.0),
                 WallAnchorPoint {
@@ -327,6 +331,8 @@ impl EditorState {
             thickness: f64::from(self.wall_thickness),
             start_height: f64::from(self.wall_height),
             end_height: f64::from(self.wall_height),
+            side_a_finish: homely_core::SurfaceFinish::default_wall(),
+            side_b_finish: homely_core::SurfaceFinish::default_wall(),
             anchors: vec![corner(&a0, x0, y0), corner(&a1, x1, y1)],
         };
         self.execute_cmd(ProjectCommand::AddWall(wall));
