@@ -129,7 +129,7 @@ pub fn draw_dock_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    // Classic flat top menu bar with embedded Homely 3D logo
+    // Classic flat top menu bar (app icon lives in the OS window titlebar)
     egui::Panel::top("menu_bar")
         .frame(
             egui::Frame::NONE
@@ -139,19 +139,6 @@ pub fn draw_dock_ui(
         )
         .show(&mut root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                if let Some(tex) = logo_tex.as_ref() {
-                    ui.image((tex.id(), egui::vec2(20.0, 20.0)));
-                    ui.add_space(4.0);
-                }
-                ui.label(
-                    egui::RichText::new("Homely 3D")
-                        .strong()
-                        .size(13.0)
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
                 ui.menu_button(s.menu_file, |ui| {
                     if ui.button(format!("{}...", s.menu_new)).clicked() {
                         editor.project_dialog = Some(ProjectDialogState {
@@ -1998,121 +1985,238 @@ fn load_project_from(editor: &mut EditorState, path: &str) {
     }
 }
 
-/// Draws the floating 3D Preview Controls HUD directly inside the 3D Viewer window.
-pub fn draw_preview_3d_overlay(ctx: &egui::Context, editor: &mut EditorState) {
+/// Draws the 3D Preview Controls as a right sidebar and bottom-right navigation widget inside the 3D Viewer window.
+pub fn draw_preview_3d_overlay(
+    ctx: &egui::Context,
+    editor: &mut EditorState,
+    viewer: &mut homely_viewer3d::Viewer3dState,
+) {
     let s = tr(editor.lang);
 
-    egui::Window::new(s.tab_preview_3d)
-        .id(egui::Id::new("viewer3d_controls_hud"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
-        .resizable(false)
-        .default_open(true)
-        .frame(
-            egui::Frame::window(&ctx.global_style())
-                .fill(egui::Color32::from_rgba_unmultiplied(24, 27, 33, 225)),
-        )
-        .show(ctx, |ui| {
-            ui.set_max_width(275.0);
+    let toggle_photo = ctx.input(|i| {
+        i.key_pressed(egui::Key::H)
+            || (editor.photo_mode_3d && i.key_pressed(egui::Key::Escape))
+    });
+    if toggle_photo {
+        editor.photo_mode_3d = !editor.photo_mode_3d;
+    }
 
-            ui.label(egui::RichText::new(s.p3d_camera).strong());
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(s.p3d_cam_iso).clicked() {
-                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Iso);
-                }
-                if ui.button(s.p3d_cam_top).clicked() {
-                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::TopDown);
-                }
-                if ui.button(s.p3d_cam_front).clicked() {
-                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Front);
-                }
-                if ui.button(s.p3d_cam_side).clicked() {
-                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Side);
-                }
+    if editor.photo_mode_3d {
+        egui::Area::new(egui::Id::new("viewer3d_photo_exit"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgba_unmultiplied(18, 20, 25, 165))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        if ui.button(format!("📷 {}", s.p3d_exit_photo)).clicked() {
+                            editor.photo_mode_3d = false;
+                        }
+                    });
+            });
+        return;
+    }
+
+    let mut root_ui = egui::Ui::new(
+        ctx.clone(),
+        "viewer3d_root".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+
+    let sidebar_resp = egui::Panel::right("viewer3d_sidebar")
+        .resizable(true)
+        .default_size(265.0)
+        .min_size(220.0)
+        .max_size(360.0)
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                .inner_margin(egui::Margin::same(10)),
+        )
+        .show(&mut root_ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading(s.tab_preview_3d);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(format!("📷 {}", s.p3d_photo_mode)).clicked() {
+                        editor.photo_mode_3d = true;
+                    }
+                });
+            });
+            ui.separator();
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.label(egui::RichText::new(s.p3d_camera).strong());
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(s.p3d_cam_iso).clicked() {
+                        editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Iso);
+                    }
+                    if ui.button(s.p3d_cam_top).clicked() {
+                        editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::TopDown);
+                    }
+                    if ui.button(s.p3d_cam_front).clicked() {
+                        editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Front);
+                    }
+                    if ui.button(s.p3d_cam_side).clicked() {
+                        editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Side);
+                    }
+                });
                 if ui.button(s.menu_reset_3d).clicked() {
                     editor.reset_3d_camera = true;
                 }
-            });
 
-            ui.separator();
-            ui.label(egui::RichText::new(s.p3d_sky).strong());
-            let sky_label = |p: homely_viewer3d::SkyPreset| -> &'static str {
-                match p {
-                    homely_viewer3d::SkyPreset::ClearDay => s.sky_clear,
-                    homely_viewer3d::SkyPreset::GoldenHour => s.sky_golden,
-                    homely_viewer3d::SkyPreset::Overcast => s.sky_overcast,
-                    homely_viewer3d::SkyPreset::Night => s.sky_night,
-                }
-            };
-            let mut env_changed = false;
-            egui::ComboBox::from_id_salt("p3d_sky_preset")
-                .selected_text(sky_label(editor.sky_preset))
-                .show_ui(ui, |ui| {
-                    for preset in [
-                        homely_viewer3d::SkyPreset::ClearDay,
-                        homely_viewer3d::SkyPreset::GoldenHour,
-                        homely_viewer3d::SkyPreset::Overcast,
-                        homely_viewer3d::SkyPreset::Night,
-                    ] {
-                        if ui
-                            .selectable_value(&mut editor.sky_preset, preset, sky_label(preset))
-                            .changed()
-                        {
-                            if preset == homely_viewer3d::SkyPreset::GoldenHour {
-                                editor.sun_elevation_deg = 12.0;
-                            } else if preset == homely_viewer3d::SkyPreset::ClearDay
-                                && editor.sun_elevation_deg < 20.0
-                            {
-                                editor.sun_elevation_deg = 50.0;
-                            }
-                            env_changed = true;
-                        }
+                ui.separator();
+                ui.label(egui::RichText::new(s.p3d_sky).strong());
+                let sky_label = |p: homely_viewer3d::SkyPreset| -> &'static str {
+                    match p {
+                        homely_viewer3d::SkyPreset::ClearDay => s.sky_clear,
+                        homely_viewer3d::SkyPreset::GoldenHour => s.sky_golden,
+                        homely_viewer3d::SkyPreset::Overcast => s.sky_overcast,
+                        homely_viewer3d::SkyPreset::Night => s.sky_night,
                     }
-                });
+                };
+                let mut env_changed = false;
+                egui::ComboBox::from_id_salt("p3d_sky_preset")
+                    .selected_text(sky_label(editor.sky_preset))
+                    .show_ui(ui, |ui| {
+                        for preset in [
+                            homely_viewer3d::SkyPreset::ClearDay,
+                            homely_viewer3d::SkyPreset::GoldenHour,
+                            homely_viewer3d::SkyPreset::Overcast,
+                            homely_viewer3d::SkyPreset::Night,
+                        ] {
+                            if ui
+                                .selectable_value(&mut editor.sky_preset, preset, sky_label(preset))
+                                .changed()
+                            {
+                                if preset == homely_viewer3d::SkyPreset::GoldenHour {
+                                    editor.sun_elevation_deg = 12.0;
+                                } else if preset == homely_viewer3d::SkyPreset::ClearDay
+                                    && editor.sun_elevation_deg < 20.0
+                                {
+                                    editor.sun_elevation_deg = 50.0;
+                                }
+                                env_changed = true;
+                            }
+                        }
+                    });
 
-            ui.separator();
-            ui.label(egui::RichText::new(s.p3d_sun).strong());
-            env_changed |= ui
-                .add(
-                    egui::Slider::new(&mut editor.sun_azimuth_deg, 0.0..=360.0)
-                        .suffix("°")
-                        .text(s.p3d_azimuth),
-                )
-                .changed();
-            env_changed |= ui
-                .add(
-                    egui::Slider::new(&mut editor.sun_elevation_deg, 2.0..=88.0)
-                        .suffix("°")
-                        .text(s.p3d_elevation),
-                )
-                .changed();
-            env_changed |= ui
-                .add(
-                    egui::Slider::new(&mut editor.sun_intensity, 1_000.0..=40_000.0)
-                        .suffix(" lx")
-                        .text(s.p3d_intensity),
-                )
-                .changed();
-            env_changed |= ui.checkbox(&mut editor.sun_shadows, s.p3d_shadows).changed();
+                ui.separator();
+                ui.label(egui::RichText::new(s.p3d_sun).strong());
+                env_changed |= ui
+                    .add(
+                        egui::Slider::new(&mut editor.sun_azimuth_deg, 0.0..=360.0)
+                            .suffix("°")
+                            .text(s.p3d_azimuth),
+                    )
+                    .changed();
+                env_changed |= ui
+                    .add(
+                        egui::Slider::new(&mut editor.sun_elevation_deg, 2.0..=88.0)
+                            .suffix("°")
+                            .text(s.p3d_elevation),
+                    )
+                    .changed();
+                env_changed |= ui
+                    .add(
+                        egui::Slider::new(&mut editor.sun_intensity, 1_000.0..=40_000.0)
+                            .suffix(" lx")
+                            .text(s.p3d_intensity),
+                    )
+                    .changed();
+                env_changed |= ui.checkbox(&mut editor.sun_shadows, s.p3d_shadows).changed();
 
-            if env_changed {
-                editor.env_dirty_3d = true;
-            }
+                if env_changed {
+                    editor.env_dirty_3d = true;
+                }
+
+                ui.separator();
+                ui.small(s.p3d_nav_hint);
+            });
         });
+    let sidebar_width = sidebar_resp.response.rect.width();
 
-    egui::Area::new(egui::Id::new("viewer3d_nav_hint"))
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -10.0))
-        .interactable(false)
+    // Bottom-right free navigation pad (Orbit, Pan, Zoom) positioned inside the 3D viewport left of the sidebar
+    let nav_btn = |ui: &mut egui::Ui, label: &str| -> bool {
+        let resp = ui.add(egui::Button::new(label).min_size(egui::vec2(26.0, 24.0)));
+        resp.clicked() || resp.is_pointer_button_down_on()
+    };
+
+    egui::Area::new(egui::Id::new("viewer3d_nav_pad"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            egui::vec2(-(sidebar_width + 12.0), -12.0),
+        )
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_unmultiplied(18, 20, 25, 195))
-                .corner_radius(6.0)
-                .inner_margin(egui::Margin::symmetric(10, 6))
+                .fill(egui::Color32::from_rgba_unmultiplied(24, 27, 33, 215))
+                .stroke(egui::Stroke::new(1.0, theme::BORDER_SUBTLE))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(s.p3d_nav_hint)
-                            .small()
-                            .color(egui::Color32::from_rgb(210, 218, 230)),
-                    );
+                    ui.horizontal(|ui| {
+                        // Orbit (Rotate scene)
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(s.p3d_nav_orbit).small().strong());
+                            ui.horizontal(|ui| {
+                                ui.add_space(28.0);
+                                if nav_btn(ui, "▲") {
+                                    viewer.orbit_delta.y += 0.035;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if nav_btn(ui, "◀") {
+                                    viewer.orbit_delta.x += 0.04;
+                                }
+                                if nav_btn(ui, "▼") {
+                                    viewer.orbit_delta.y -= 0.035;
+                                }
+                                if nav_btn(ui, "▶") {
+                                    viewer.orbit_delta.x -= 0.04;
+                                }
+                            });
+                        });
+
+                        ui.separator();
+
+                        // Pan (Move view)
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(s.p3d_nav_pan).small().strong());
+                            ui.horizontal(|ui| {
+                                ui.add_space(28.0);
+                                if nav_btn(ui, "⬆") {
+                                    viewer.pan_delta.y += 0.18;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if nav_btn(ui, "⬅") {
+                                    viewer.pan_delta.x -= 0.18;
+                                }
+                                if nav_btn(ui, "⬇") {
+                                    viewer.pan_delta.y -= 0.18;
+                                }
+                                if nav_btn(ui, "➡") {
+                                    viewer.pan_delta.x += 0.18;
+                                }
+                            });
+                        });
+
+                        ui.separator();
+
+                        // Zoom + Photo Mode
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(s.p3d_nav_zoom).small().strong());
+                            if ui.add(egui::Button::new("🔍 +").min_size(egui::vec2(48.0, 24.0))).is_pointer_button_down_on() {
+                                viewer.zoom_delta -= 0.25;
+                            }
+                            if ui.add(egui::Button::new("🔍 -").min_size(egui::vec2(48.0, 24.0))).is_pointer_button_down_on() {
+                                viewer.zoom_delta += 0.25;
+                            }
+                        });
+                    });
                 });
         });
 }

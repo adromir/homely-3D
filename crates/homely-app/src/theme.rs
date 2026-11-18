@@ -87,13 +87,18 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     ds
 }
 
-/// Decodes the embedded Homely 3D logo into `(rgba_bytes, width, height)`.
+/// Decodes the embedded Homely 3D logo into `(rgba_bytes, width, height)` sized for OS window icons.
 pub fn load_logo_rgba() -> (Vec<u8>, u32, u32) {
     let img = image::load_from_memory(LOGO_PNG)
-        .expect("embedded logo.png must be valid PNG")
-        .to_rgba8();
-    let (w, h) = img.dimensions();
-    (img.into_raw(), w, h)
+        .expect("embedded logo.png must be valid PNG");
+    let icon_img = if img.width() > 64 || img.height() > 64 {
+        img.resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    }
+    .to_rgba8();
+    let (w, h) = icon_img.dimensions();
+    (icon_img.into_raw(), w, h)
 }
 
 /// Loads and caches the embedded Homely 3D logo texture in `egui`.

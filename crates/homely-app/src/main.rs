@@ -74,7 +74,7 @@ fn draw_viewer3d_overlay_ui(
         theme::apply_native_theme(ctx);
         *theme_applied = true;
     }
-    draw_preview_3d_overlay(ctx, &mut editor);
+    draw_preview_3d_overlay(ctx, &mut editor, &mut viewer);
     viewer.ui_wants_pointer = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
 }
 

@@ -62,6 +62,9 @@ pub struct Viewer3dState {
     pub env_dirty: bool,
     pub reset_camera: bool,
     pub camera_preset: Option<CameraPreset>,
+    pub orbit_delta: Vec2,
+    pub pan_delta: Vec2,
+    pub zoom_delta: f32,
     pub visible: bool,
     pub ui_wants_pointer: bool,
     pub sun_azimuth_deg: f32,
@@ -82,6 +85,9 @@ impl Default for Viewer3dState {
             env_dirty: true,
             reset_camera: false,
             camera_preset: None,
+            orbit_delta: Vec2::ZERO,
+            pan_delta: Vec2::ZERO,
+            zoom_delta: 0.0,
             visible: true,
             ui_wants_pointer: false,
             sun_azimuth_deg: 45.0,
@@ -656,6 +662,23 @@ fn update_3d_camera_and_visibility(
                 orbit.pitch = -0.22;
             }
         }
+    }
+
+    // Apply UI button navigation deltas (orbit / pan / zoom)
+    if state.orbit_delta != Vec2::ZERO {
+        orbit.yaw += state.orbit_delta.x;
+        orbit.pitch = (orbit.pitch + state.orbit_delta.y).clamp(-1.48, 0.20);
+        state.orbit_delta = Vec2::ZERO;
+    }
+    if state.pan_delta != Vec2::ZERO {
+        let right = Vec3::new(orbit.yaw.cos(), 0.0, -orbit.yaw.sin());
+        let forward = Vec3::new(-orbit.yaw.sin(), 0.0, -orbit.yaw.cos());
+        orbit.focus += right * state.pan_delta.x + forward * state.pan_delta.y;
+        state.pan_delta = Vec2::ZERO;
+    }
+    if state.zoom_delta.abs() > 1e-6 {
+        orbit.distance = (orbit.distance + state.zoom_delta).clamp(1.5, 80.0);
+        state.zoom_delta = 0.0;
     }
 
     let cursor_in_3d = viewer_window

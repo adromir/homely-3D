@@ -103,6 +103,11 @@ pub struct Strings {
     pub sky_overcast: &'static str,
     pub sky_night: &'static str,
     pub p3d_nav_hint: &'static str,
+    pub p3d_nav_orbit: &'static str,
+    pub p3d_nav_pan: &'static str,
+    pub p3d_nav_zoom: &'static str,
+    pub p3d_photo_mode: &'static str,
+    pub p3d_exit_photo: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -200,6 +205,11 @@ static DE: Strings = Strings {
     sky_overcast: "Bewölkt",
     sky_night: "Nacht",
     p3d_nav_hint: "Im 3D-Fenster: Rechtsklick-Ziehen = Drehen | Mittelklick / Shift+Rechts = Schwenken | Mausrad = Zoom | WASD/Pfeile = Bewegen",
+    p3d_nav_orbit: "Drehen",
+    p3d_nav_pan: "Schwenken",
+    p3d_nav_zoom: "Zoom",
+    p3d_photo_mode: "Foto-Modus (H)",
+    p3d_exit_photo: "UI einblenden (H)",
 };
 
 static EN: Strings = Strings {
@@ -290,4 +300,9 @@ static EN: Strings = Strings {
     sky_overcast: "Overcast",
     sky_night: "Night",
     p3d_nav_hint: "In 3D Window: Right-Drag = Orbit | Middle-Drag / Shift+Right = Pan | Wheel = Zoom | WASD/Arrows = Move",
+    p3d_nav_orbit: "Orbit",
+    p3d_nav_pan: "Pan",
+    p3d_nav_zoom: "Zoom",
+    p3d_photo_mode: "Photo Mode (H)",
+    p3d_exit_photo: "Show UI (H)",
 };
