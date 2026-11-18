@@ -4,7 +4,7 @@ use crate::i18n::Lang;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use homely_core::command::{CommandHistory, ProjectCommand};
-use homely_core::{Level, PointType, Project, Wall, WallAnchorPoint};
+use homely_core::{builtin_catalog, CatalogItem, Level, PointType, Project, Wall, WallAnchorPoint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragHandleKind {
@@ -57,6 +57,8 @@ pub struct EditorState {
     pub selected_opening_id: Option<String>,
     pub selected_room_sig: Option<String>,
     pub drag_state: Option<DragAnchorState>,
+    pub catalog: Vec<CatalogItem>,
+    pub dragging_catalog_item: Option<CatalogItem>,
     /// Active start point when chaining new 2-point walls with `Ctrl + Left-click`.
     pub active_draw_from: Option<(f64, f64)>,
     pub context_menu: Option<ContextMenuState>,
@@ -142,6 +144,8 @@ impl Default for EditorState {
             selected_opening_id: None,
             selected_room_sig: None,
             drag_state: None,
+            catalog: builtin_catalog(),
+            dragging_catalog_item: None,
             active_draw_from: None,
             context_menu: None,
             wall_thickness: 0.24,

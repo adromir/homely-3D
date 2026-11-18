@@ -73,6 +73,8 @@ pub struct Strings {
     pub furniture: &'static str,
     pub unassigned: &'static str,
     pub object_name: &'static str,
+    pub catalog_title: &'static str,
+    pub catalog_hint: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -140,6 +142,8 @@ static DE: Strings = Strings {
     furniture: "Mobiliar",
     unassigned: "Freie Elemente",
     object_name: "Name",
+    catalog_title: "Katalog",
+    catalog_hint: "Auf eine Wand ziehen",
 };
 
 static EN: Strings = Strings {
@@ -200,4 +204,6 @@ static EN: Strings = Strings {
     furniture: "Furniture",
     unassigned: "Unassigned",
     object_name: "Name",
+    catalog_title: "Catalog",
+    catalog_hint: "Drag onto any wall",
 };

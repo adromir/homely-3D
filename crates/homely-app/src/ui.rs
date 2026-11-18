@@ -15,7 +15,9 @@ use homely_core::geometry::{
 };
 use homely_core::rooms::{detect_rooms, point_in_polygon, room_signature, triangulate_polygon};
 use homely_core::sh3x::{load_sh3x, save_sh3x};
-use homely_core::{Opening, OpeningType, PointType, Wall, WallAnchorPoint};
+use homely_core::{
+    CatalogCategory, CatalogItem, Opening, OpeningType, PointType, Wall, WallAnchorPoint,
+};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +227,64 @@ pub fn draw_dock_ui(
 
             ui.add_space(10.0);
             ui.separator();
+            ui.label(egui::RichText::new(s.catalog_title).strong().size(13.0));
+            ui.label(
+                egui::RichText::new(s.catalog_hint)
+                    .size(10.5)
+                    .color(egui::Color32::from_gray(155)),
+            );
+            ui.add_space(4.0);
+            let catalog_items = editor.catalog.clone();
+            for item in catalog_items {
+                let label = match editor.lang {
+                    Lang::De => &item.name_de,
+                    Lang::En => &item.name_en,
+                };
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(140.0, 26.0),
+                    egui::Sense::click_and_drag(),
+                );
+                if ui.is_rect_visible(rect) {
+                    let hovered = resp.hovered();
+                    let fill = if hovered {
+                        egui::Color32::from_rgb(54, 62, 74)
+                    } else {
+                        egui::Color32::from_rgb(38, 42, 50)
+                    };
+                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 68, 80));
+                    ui.painter().rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
+                    let tag = match item.category {
+                        CatalogCategory::Door => "D",
+                        CatalogCategory::Window => "W",
+                        CatalogCategory::Furniture => "F",
+                    };
+                    let tag_col = match item.category {
+                        CatalogCategory::Door => egui::Color32::from_rgb(235, 175, 95),
+                        CatalogCategory::Window => egui::Color32::from_rgb(135, 205, 250),
+                        CatalogCategory::Furniture => egui::Color32::from_rgb(160, 220, 150),
+                    };
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 8.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        tag,
+                        egui::FontId::monospace(11.5),
+                        tag_col,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 24.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(11.5),
+                        egui::Color32::from_gray(230),
+                    );
+                }
+                if resp.drag_started() {
+                    editor.dragging_catalog_item = Some(item);
+                }
+            }
+
+            ui.add_space(10.0);
+            ui.separator();
             ui.label(
                 egui::RichText::new(s.hint_ctrl)
                     .size(11.0)
@@ -249,6 +309,25 @@ pub fn draw_dock_ui(
     });
 
     draw_context_menu(ctx, &mut editor);
+
+    // Floating ghost badge while dragging a catalog Door/Window onto a wall
+    if let Some(ref item) = editor.dragging_catalog_item {
+        if let Some(pos) = ctx.pointer_latest_pos() {
+            let label = match editor.lang {
+                Lang::De => item.name_de.clone(),
+                Lang::En => item.name_en.clone(),
+            };
+            egui::Area::new(egui::Id::new("catalog_drag_ghost"))
+                .order(egui::Order::Tooltip)
+                .interactable(false)
+                .fixed_pos(pos + egui::vec2(14.0, 14.0))
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(label);
+                    });
+                });
+        }
+    }
 
     Ok(())
 }
@@ -563,6 +642,34 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let pointer_pos = response.hover_pos().filter(|p| canvas_rect.contains(*p));
     let ctrl_held = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+
+    // Catalog Drag & Drop preview and placement onto walls
+    if let Some(drag_item) = editor.dragging_catalog_item.clone() {
+        let wall_hit = pointer_pos.and_then(|pos| {
+            let (wx, wy) = screen_to_world(pos);
+            find_wall_at_world(wx, wy, editor).map(|(wid, _)| (wid, wx, wy))
+        });
+
+        if let Some((ref wid, wx, wy)) = wall_hit {
+            if let Some(wall) = editor.project.walls.iter().find(|w| w.id == *wid) {
+                let line = tessellate_wall_centerline(wall, 0.02);
+                let t = project_point_onto_polyline_t(&line, wx, wy);
+                if let Some((mid, dir)) = sample_polyline_at_t(&line, t) {
+                    let hw = drag_item.default_width * 0.5;
+                    let p0 = world_to_screen(mid.x - dir.x * hw, mid.y - dir.y * hw);
+                    let p1 = world_to_screen(mid.x + dir.x * hw, mid.y + dir.y * hw);
+                    painter.line_segment([p0, p1], egui::Stroke::new(5.0, egui::Color32::LIGHT_GREEN));
+                }
+            }
+        }
+
+        if !ui.input(|i| i.pointer.primary_down()) {
+            if let Some((wid, wx, wy)) = wall_hit {
+                insert_catalog_opening_at(editor, &wid, wx, wy, &drag_item);
+            }
+            editor.dragging_catalog_item = None;
+        }
+    }
 
     // Live preview when chaining from `active_draw_from`
     if let Some((fx, fy)) = editor.active_draw_from {
@@ -1269,6 +1376,8 @@ fn insert_opening_at(
         name: default_name,
         wall_id: wall_id.to_string(),
         opening_type: kind,
+        catalog_item_id: None,
+        asset_id: None,
         segment_index: 0,
         segment_t: t,
         elevation,
@@ -1282,6 +1391,52 @@ fn insert_opening_at(
     editor.execute_cmd(ProjectCommand::AddOpening(opening));
     editor.selected_opening_id = Some(op_id);
     editor.status = format!("Added {:?} on {wall_id}.", kind);
+}
+
+fn insert_catalog_opening_at(
+    editor: &mut EditorState,
+    wall_id: &str,
+    wx: f64,
+    wy: f64,
+    item: &CatalogItem,
+) {
+    let Some(wall) = editor.project.walls.iter().find(|w| w.id == wall_id).cloned() else {
+        return;
+    };
+    let line = tessellate_wall_centerline(&wall, 0.02);
+    let t = project_point_onto_polyline_t(&line, wx, wy);
+    let opening_type = match item.category {
+        CatalogCategory::Door => OpeningType::Door,
+        CatalogCategory::Window => OpeningType::Window,
+        CatalogCategory::Furniture => OpeningType::Cutout,
+    };
+    let op_id = editor.alloc_id("op");
+    let item_name = match editor.lang {
+        Lang::De => item.name_de.clone(),
+        Lang::En => item.name_en.clone(),
+    };
+    let opening = Opening {
+        id: op_id.clone(),
+        name: item_name.clone(),
+        wall_id: wall_id.to_string(),
+        opening_type,
+        catalog_item_id: Some(item.id.clone()),
+        asset_id: item.asset_id.clone(),
+        segment_index: 0,
+        segment_t: t,
+        elevation: item.default_elevation,
+        width: item.default_width,
+        height: item.default_height,
+        depth: wall.thickness,
+        swing_flip_side: false,
+        swing_flip_hinge: false,
+        ha_entity_id: None,
+    };
+    editor.execute_cmd(ProjectCommand::AddOpening(opening));
+    editor.selected_opening_id = Some(op_id);
+    editor.selected_wall_id = None;
+    editor.selected_room_sig = None;
+    editor.status = format!("Placed '{item_name}' on {wall_id}.");
 }
 
 fn find_opening_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<String> {

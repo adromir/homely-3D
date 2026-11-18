@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS openings (
     name TEXT NOT NULL DEFAULT '',
     wall_id TEXT NOT NULL REFERENCES walls(id) ON DELETE CASCADE,
     opening_type TEXT NOT NULL CHECK(opening_type IN ('door', 'window', 'cutout')),
+    catalog_item_id TEXT,
+    asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
     segment_index INTEGER NOT NULL DEFAULT 0,
     segment_t REAL NOT NULL DEFAULT 0.5,
     elevation REAL NOT NULL DEFAULT 0.0,
@@ -251,13 +253,15 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
     for opening in &project.openings {
         tx.execute(
             "INSERT INTO openings
-             (id, name, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             (id, name, wall_id, opening_type, catalog_item_id, asset_id, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 opening.id,
                 opening.name,
                 opening.wall_id,
                 opening.opening_type.as_str(),
+                opening.catalog_item_id,
+                opening.asset_id,
                 opening.segment_index as i64,
                 opening.segment_t,
                 opening.elevation,
@@ -424,7 +428,7 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, name, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id
+        "SELECT id, name, wall_id, opening_type, catalog_item_id, asset_id, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id
          FROM openings",
     )?;
     for row in stmt.query_map([], |row| {
@@ -433,15 +437,17 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, i64>(4)? as usize,
-            row.get::<_, f64>(5)?,
-            row.get::<_, f64>(6)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)? as usize,
             row.get::<_, f64>(7)?,
             row.get::<_, f64>(8)?,
             row.get::<_, f64>(9)?,
-            row.get::<_, i32>(10)? != 0,
-            row.get::<_, i32>(11)? != 0,
-            row.get::<_, Option<String>>(12)?,
+            row.get::<_, f64>(10)?,
+            row.get::<_, f64>(11)?,
+            row.get::<_, i32>(12)? != 0,
+            row.get::<_, i32>(13)? != 0,
+            row.get::<_, Option<String>>(14)?,
         ))
     })? {
         let (
@@ -449,6 +455,8 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             name,
             wall_id,
             type_str,
+            catalog_item_id,
+            asset_id,
             segment_index,
             segment_t,
             elevation,
@@ -464,6 +472,8 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             name,
             wall_id,
             opening_type: OpeningType::parse(&type_str)?,
+            catalog_item_id,
+            asset_id,
             segment_index,
             segment_t,
             elevation,
@@ -578,6 +588,8 @@ mod tests {
                 name: "Wohnzimmerfenster".into(),
                 wall_id: "wall-1".into(),
                 opening_type: OpeningType::Window,
+                catalog_item_id: Some("cat-win-standard".into()),
+                asset_id: None,
                 segment_index: 0,
                 segment_t: 0.5,
                 elevation: 0.9,

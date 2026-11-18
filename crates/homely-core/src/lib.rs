@@ -171,6 +171,79 @@ impl OpeningType {
     }
 }
 
+/// Category of a placeable catalog object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogCategory {
+    Door,
+    Window,
+    Furniture,
+}
+
+/// Entry in the object catalog (doors, windows, furniture) with optional 3D asset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogItem {
+    pub id: String,
+    pub name_de: String,
+    pub name_en: String,
+    pub category: CatalogCategory,
+    pub default_width: f64,
+    pub default_height: f64,
+    pub default_depth: f64,
+    pub default_elevation: f64,
+    pub asset_id: Option<String>,
+}
+
+/// Built-in starter catalog for doors and windows.
+pub fn builtin_catalog() -> Vec<CatalogItem> {
+    vec![
+        CatalogItem {
+            id: "cat-door-single".into(),
+            name_de: "Innentür (0.90m)".into(),
+            name_en: "Interior Door (0.90m)".into(),
+            category: CatalogCategory::Door,
+            default_width: 0.90,
+            default_height: 2.10,
+            default_depth: 0.24,
+            default_elevation: 0.0,
+            asset_id: None,
+        },
+        CatalogItem {
+            id: "cat-door-double".into(),
+            name_de: "Doppeltür (1.60m)".into(),
+            name_en: "Double Door (1.60m)".into(),
+            category: CatalogCategory::Door,
+            default_width: 1.60,
+            default_height: 2.10,
+            default_depth: 0.24,
+            default_elevation: 0.0,
+            asset_id: None,
+        },
+        CatalogItem {
+            id: "cat-win-standard".into(),
+            name_de: "Fenster (1.20x1.30m)".into(),
+            name_en: "Window (1.20x1.30m)".into(),
+            category: CatalogCategory::Window,
+            default_width: 1.20,
+            default_height: 1.30,
+            default_depth: 0.24,
+            default_elevation: 0.90,
+            asset_id: None,
+        },
+        CatalogItem {
+            id: "cat-win-tall".into(),
+            name_de: "Bodentiefes Fenster (1.40x2.10m)".into(),
+            name_en: "Tall Window (1.40x2.10m)".into(),
+            category: CatalogCategory::Window,
+            default_width: 1.40,
+            default_height: 2.10,
+            default_depth: 0.24,
+            default_elevation: 0.0,
+            asset_id: None,
+        },
+    ]
+}
+
 /// A parametric opening positioned on a specific wall segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Opening {
@@ -178,6 +251,8 @@ pub struct Opening {
     pub name: String,
     pub wall_id: String,
     pub opening_type: OpeningType,
+    pub catalog_item_id: Option<String>,
+    pub asset_id: Option<String>,
     pub segment_index: usize,
     pub segment_t: f64,
     pub elevation: f64,
