@@ -74,9 +74,21 @@ fn sync_editor_to_viewer3d(
         viewer.plan_height = editor.plan_height;
         viewer.dirty = true;
     }
+    if editor.env_dirty_3d {
+        editor.env_dirty_3d = false;
+        viewer.sun_azimuth_deg = editor.sun_azimuth_deg;
+        viewer.sun_elevation_deg = editor.sun_elevation_deg;
+        viewer.sun_intensity = editor.sun_intensity;
+        viewer.sun_shadows = editor.sun_shadows;
+        viewer.sky_preset = editor.sky_preset;
+        viewer.env_dirty = true;
+    }
     if editor.reset_3d_camera {
         editor.reset_3d_camera = false;
         viewer.reset_camera = true;
+    }
+    if let Some(preset) = editor.camera_preset_3d.take() {
+        viewer.camera_preset = Some(preset);
     }
 
     let prev_ed = prev_editor_visible.unwrap_or(true);

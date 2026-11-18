@@ -5,6 +5,7 @@ use bevy::camera::RenderTarget;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{PresentMode, WindowCloseRequested, WindowRef, WindowResolution};
 use homely_core::geometry::{
     compute_level_wall_offsets, polyline_length, sample_polyline_at_t, slice_offset_pairs,
@@ -20,8 +21,34 @@ impl Plugin for Viewer3dPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Viewer3dState>()
             .add_systems(Startup, setup_3d_viewer)
-            .add_systems(Update, (rebuild_3d_scene, update_3d_camera_and_visibility));
+            .add_systems(
+                Update,
+                (
+                    rebuild_3d_scene,
+                    update_3d_environment,
+                    update_3d_camera_and_visibility,
+                ),
+            );
     }
+}
+
+/// Skybox / atmosphere preset for the 3D viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SkyPreset {
+    #[default]
+    ClearDay,
+    GoldenHour,
+    Overcast,
+    Night,
+}
+
+/// One-click camera angle presets for the 3D viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraPreset {
+    Iso,
+    TopDown,
+    Front,
+    Side,
 }
 
 /// Synchronized state consumed by [`Viewer3dPlugin`].
@@ -32,8 +59,15 @@ pub struct Viewer3dState {
     pub plan_width: f64,
     pub plan_height: f64,
     pub dirty: bool,
+    pub env_dirty: bool,
     pub reset_camera: bool,
+    pub camera_preset: Option<CameraPreset>,
     pub visible: bool,
+    pub sun_azimuth_deg: f32,
+    pub sun_elevation_deg: f32,
+    pub sun_intensity: f32,
+    pub sun_shadows: bool,
+    pub sky_preset: SkyPreset,
 }
 
 impl Default for Viewer3dState {
@@ -44,8 +78,15 @@ impl Default for Viewer3dState {
             plan_width: 20.0,
             plan_height: 15.0,
             dirty: true,
+            env_dirty: true,
             reset_camera: false,
+            camera_preset: None,
             visible: true,
+            sun_azimuth_deg: 45.0,
+            sun_elevation_deg: 50.0,
+            sun_intensity: 16_000.0,
+            sun_shadows: true,
+            sky_preset: SkyPreset::ClearDay,
         }
     }
 }
@@ -57,6 +98,14 @@ pub struct Viewer3dWindow;
 /// Marker component for dynamically generated 3D meshes (walls & room floors).
 #[derive(Component)]
 pub struct SceneMesh3d;
+
+/// Marker component for the configurable sun directional light.
+#[derive(Component)]
+pub struct SunLight;
+
+/// Marker component for the procedural textured sky dome.
+#[derive(Component)]
+pub struct SkyDome;
 
 /// Orbit camera controller state.
 #[derive(Component)]
@@ -75,7 +124,13 @@ impl OrbitCamera {
     }
 }
 
-fn setup_3d_viewer(mut commands: Commands) {
+fn setup_3d_viewer(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    state: Res<Viewer3dState>,
+) {
     let viewer_window = commands
         .spawn((
             Viewer3dWindow,
@@ -102,13 +157,32 @@ fn setup_3d_viewer(mut commands: Commands) {
         orbit,
     ));
 
+    let sun_dir = sun_direction(state.sun_azimuth_deg, state.sun_elevation_deg);
+    let target = Vec3::new((state.plan_width * 0.5) as f32, 0.0, (state.plan_height * 0.5) as f32);
     commands.spawn((
+        SunLight,
         DirectionalLight {
-            illuminance: 12_000.0,
-            shadow_maps_enabled: true,
+            illuminance: state.sun_intensity,
+            shadow_maps_enabled: state.sun_shadows,
+            color: sun_color(state.sky_preset, state.sun_elevation_deg),
             ..default()
         },
-        Transform::from_xyz(12.0, 16.0, 12.0).looking_at(Vec3::new(5.0, 0.0, 4.0), Vec3::Y),
+        Transform::from_translation(target + sun_dir * 30.0).looking_at(target, Vec3::Y),
+    ));
+
+    let sky_img = generate_sky_texture(state.sky_preset, state.sun_azimuth_deg, state.sun_elevation_deg);
+    let sky_tex = images.add(sky_img);
+    let sky_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(sky_tex),
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        SkyDome,
+        Mesh3d(meshes.add(Sphere::new(180.0).mesh().uv(48, 24))),
+        MeshMaterial3d(sky_mat),
+        Transform::from_translation(target),
     ));
 }
 
@@ -335,12 +409,165 @@ fn rebuild_3d_scene(
     }
 }
 
+fn sun_direction(azimuth_deg: f32, elevation_deg: f32) -> Vec3 {
+    let az = azimuth_deg.to_radians();
+    let el = elevation_deg.clamp(2.0, 89.0).to_radians();
+    Vec3::new(el.cos() * az.cos(), el.sin(), el.cos() * az.sin()).normalize()
+}
+
+fn sun_color(preset: SkyPreset, elevation_deg: f32) -> Color {
+    match preset {
+        SkyPreset::ClearDay => {
+            if elevation_deg < 20.0 {
+                Color::srgb(1.0, 0.86, 0.70)
+            } else {
+                Color::srgb(1.0, 0.98, 0.94)
+            }
+        }
+        SkyPreset::GoldenHour => Color::srgb(1.0, 0.72, 0.45),
+        SkyPreset::Overcast => Color::srgb(0.86, 0.90, 0.95),
+        SkyPreset::Night => Color::srgb(0.45, 0.58, 0.85),
+    }
+}
+
+fn sky_palette(preset: SkyPreset) -> ([f32; 3], [f32; 3], [f32; 3], f32) {
+    // (zenith, horizon, ground, ambient_brightness)
+    match preset {
+        SkyPreset::ClearDay => ([0.18, 0.46, 0.86], [0.68, 0.84, 0.96], [0.22, 0.25, 0.28], 380.0),
+        SkyPreset::GoldenHour => ([0.20, 0.30, 0.56], [0.95, 0.62, 0.38], [0.24, 0.19, 0.18], 260.0),
+        SkyPreset::Overcast => ([0.48, 0.53, 0.59], [0.74, 0.77, 0.81], [0.25, 0.26, 0.28], 420.0),
+        SkyPreset::Night => ([0.03, 0.05, 0.12], [0.09, 0.13, 0.24], [0.04, 0.05, 0.08], 90.0),
+    }
+}
+
+fn generate_sky_texture(preset: SkyPreset, azimuth_deg: f32, elevation_deg: f32) -> Image {
+    let width = 256u32;
+    let height = 128u32;
+    let (zenith, horizon, ground, _) = sky_palette(preset);
+    let sun_dir = sun_direction(azimuth_deg, elevation_deg);
+    let sun_tint: [f32; 3] = match preset {
+        SkyPreset::ClearDay => [1.0, 0.96, 0.86],
+        SkyPreset::GoldenHour => [1.0, 0.72, 0.38],
+        SkyPreset::Overcast => [0.88, 0.90, 0.92],
+        SkyPreset::Night => [0.65, 0.76, 0.98],
+    };
+
+    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        // v = 0 at top (zenith), 1 at bottom (nadir)
+        let v = (y as f32 + 0.5) / height as f32;
+        let theta = v * std::f32::consts::PI; // 0 = +Y zenith, PI = -Y nadir
+        let dir_y = theta.cos();
+        let sin_theta = theta.sin();
+
+        let base = if dir_y >= 0.0 {
+            let t = (1.0 - dir_y).powf(2.2);
+            [
+                zenith[0] * (1.0 - t) + horizon[0] * t,
+                zenith[1] * (1.0 - t) + horizon[1] * t,
+                zenith[2] * (1.0 - t) + horizon[2] * t,
+            ]
+        } else {
+            let t = (-dir_y).min(1.0).powf(0.6);
+            [
+                horizon[0] * (1.0 - t) + ground[0] * t,
+                horizon[1] * (1.0 - t) + ground[1] * t,
+                horizon[2] * (1.0 - t) + ground[2] * t,
+            ]
+        };
+
+        for x in 0..width {
+            let u = (x as f32 + 0.5) / width as f32;
+            let phi = u * std::f32::consts::TAU;
+            let dir = Vec3::new(sin_theta * phi.cos(), dir_y, sin_theta * phi.sin());
+            let cos_sun = dir.dot(sun_dir).max(0.0);
+
+            let glow = match preset {
+                SkyPreset::Overcast => cos_sun.powf(12.0) * 0.14,
+                SkyPreset::Night => cos_sun.powf(220.0) * 0.65 + cos_sun.powf(18.0) * 0.08,
+                _ => cos_sun.powf(260.0) * 0.95 + cos_sun.powf(14.0) * 0.25,
+            };
+
+            let r = (base[0] + sun_tint[0] * glow).clamp(0.0, 1.0);
+            let g = (base[1] + sun_tint[1] * glow).clamp(0.0, 1.0);
+            let b = (base[2] + sun_tint[2] * glow).clamp(0.0, 1.0);
+            data.push((r * 255.0) as u8);
+            data.push((g * 255.0) as u8);
+            data.push((b * 255.0) as u8);
+            data.push(255);
+        }
+    }
+
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+fn update_3d_environment(
+    mut state: ResMut<Viewer3dState>,
+    mut sun_q: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
+    sky_q: Query<&MeshMaterial3d<StandardMaterial>, With<SkyDome>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut clear_color: ResMut<ClearColor>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+) {
+    if !state.env_dirty {
+        return;
+    }
+    state.env_dirty = false;
+
+    let target = Vec3::new(
+        (state.plan_width * 0.5) as f32,
+        0.0,
+        (state.plan_height * 0.5) as f32,
+    );
+    let sun_dir = sun_direction(state.sun_azimuth_deg, state.sun_elevation_deg);
+    let s_color = sun_color(state.sky_preset, state.sun_elevation_deg);
+    let (_, horizon, _, amb_brightness) = sky_palette(state.sky_preset);
+
+    clear_color.0 = Color::srgb(horizon[0], horizon[1], horizon[2]);
+    ambient.color = s_color;
+    ambient.brightness = amb_brightness;
+
+    if let Ok((mut light, mut transform)) = sun_q.single_mut() {
+        light.illuminance = if state.sky_preset == SkyPreset::Night {
+            (state.sun_intensity * 0.12).max(200.0)
+        } else if state.sky_preset == SkyPreset::Overcast {
+            state.sun_intensity * 0.55
+        } else {
+            state.sun_intensity
+        };
+        light.color = s_color;
+        light.shadow_maps_enabled = state.sun_shadows;
+        *transform = Transform::from_translation(target + sun_dir * 35.0).looking_at(target, Vec3::Y);
+    }
+
+    let sky_img = generate_sky_texture(state.sky_preset, state.sun_azimuth_deg, state.sun_elevation_deg);
+    let sky_tex = images.add(sky_img);
+    for mat_handle in &sky_q {
+        if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
+            mat.base_color_texture = Some(sky_tex.clone());
+        }
+    }
+}
+
 fn update_3d_camera_and_visibility(
     mut commands: Commands,
     mut state: ResMut<Viewer3dState>,
     mut close_events: MessageReader<WindowCloseRequested>,
     mut viewer_window: Query<(Entity, &mut Window), With<Viewer3dWindow>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     mut camera_query: Query<(&mut Transform, &mut OrbitCamera, &mut RenderTarget)>,
@@ -386,12 +613,42 @@ fn update_3d_camera_and_visibility(
         }
     }
 
+    let center = Vec3::new(
+        (state.plan_width * 0.25) as f32,
+        1.0,
+        (state.plan_height * 0.25) as f32,
+    );
     if state.reset_camera {
         state.reset_camera = false;
-        orbit.focus = Vec3::new((state.plan_width * 0.25) as f32, 1.0, (state.plan_height * 0.25) as f32);
+        orbit.focus = center;
         orbit.distance = 12.0;
         orbit.yaw = 0.6;
         orbit.pitch = -0.55;
+    }
+    if let Some(preset) = state.camera_preset.take() {
+        orbit.focus = center;
+        match preset {
+            CameraPreset::Iso => {
+                orbit.distance = 14.0;
+                orbit.yaw = 0.65;
+                orbit.pitch = -0.55;
+            }
+            CameraPreset::TopDown => {
+                orbit.distance = 18.0;
+                orbit.yaw = 0.0;
+                orbit.pitch = -1.48;
+            }
+            CameraPreset::Front => {
+                orbit.distance = 14.0;
+                orbit.yaw = 0.0;
+                orbit.pitch = -0.22;
+            }
+            CameraPreset::Side => {
+                orbit.distance = 14.0;
+                orbit.yaw = std::f32::consts::FRAC_PI_2;
+                orbit.pitch = -0.22;
+            }
+        }
     }
 
     let cursor_in_3d = viewer_window
@@ -399,17 +656,48 @@ fn update_3d_camera_and_visibility(
         .is_ok_and(|(_, w)| w.visible && w.cursor_position().is_some());
 
     if cursor_in_3d {
-        if mouse_buttons.pressed(MouseButton::Right) {
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let panning = mouse_buttons.pressed(MouseButton::Middle)
+            || (shift && mouse_buttons.pressed(MouseButton::Right));
+        let orbiting = !shift && mouse_buttons.pressed(MouseButton::Right);
+
+        if panning {
+            let right = Vec3::new(orbit.yaw.cos(), 0.0, -orbit.yaw.sin());
+            let forward = Vec3::new(-orbit.yaw.sin(), 0.0, -orbit.yaw.cos());
+            let pan_scale = orbit.distance * 0.0018;
+            for ev in mouse_motion.read() {
+                orbit.focus -= right * (ev.delta.x * pan_scale);
+                orbit.focus += forward * (ev.delta.y * pan_scale);
+            }
+        } else if orbiting {
             for ev in mouse_motion.read() {
                 orbit.yaw -= ev.delta.x * 0.006;
-                orbit.pitch = (orbit.pitch - ev.delta.y * 0.006).clamp(-1.45, -0.05);
+                orbit.pitch = (orbit.pitch - ev.delta.y * 0.006).clamp(-1.48, 0.20);
             }
         } else {
             mouse_motion.clear();
         }
 
+        // Keyboard WASD / Arrow panning while cursor is inside 3D window
+        let dt = time.delta_secs();
+        let speed = (orbit.distance * 0.85).max(3.0) * dt;
+        let right = Vec3::new(orbit.yaw.cos(), 0.0, -orbit.yaw.sin());
+        let forward = Vec3::new(-orbit.yaw.sin(), 0.0, -orbit.yaw.cos());
+        if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+            orbit.focus += forward * speed;
+        }
+        if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+            orbit.focus -= forward * speed;
+        }
+        if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+            orbit.focus += right * speed;
+        }
+        if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+            orbit.focus -= right * speed;
+        }
+
         for ev in mouse_wheel.read() {
-            orbit.distance = (orbit.distance - ev.y * 0.8).clamp(2.0, 60.0);
+            orbit.distance = (orbit.distance - ev.y * 0.9).clamp(1.5, 80.0);
         }
     } else {
         mouse_motion.clear();
