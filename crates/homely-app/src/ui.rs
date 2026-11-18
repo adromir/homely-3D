@@ -2,7 +2,8 @@
 
 use crate::i18n::{tr, Lang};
 use crate::state::{
-    corner, ContextMenuKind, ContextMenuState, DragAnchorState, DragHandleKind, EditorState,
+    corner, BuildingDragState, ContextMenuKind, ContextMenuState, DragAnchorState, DragHandleKind,
+    EditorState, ProjectDialogState,
 };
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -13,7 +14,10 @@ use homely_core::geometry::{
     compute_level_wall_offsets, project_point_onto_polyline_t, sample_polyline_at_t,
     tessellate_wall_centerline,
 };
-use homely_core::rooms::{detect_rooms, point_in_polygon, room_signature, triangulate_polygon};
+use homely_core::rooms::{
+    collect_connected_building_walls, detect_rooms, point_in_polygon, room_signature,
+    triangulate_polygon,
+};
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{
     CatalogCategory, CatalogItem, Opening, OpeningType, PointType, Wall, WallAnchorPoint,
@@ -126,15 +130,40 @@ pub fn draw_dock_ui(
         .show(&mut root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(s.menu_file, |ui| {
-                    if ui.button(s.menu_new).clicked() {
-                        editor.reset_new_project();
-                        editor.status = s.menu_new.into();
+                    if ui.button(format!("{}...", s.menu_new)).clicked() {
+                        editor.project_dialog = Some(ProjectDialogState {
+                            is_new: true,
+                            name: "Homely 3D Project".into(),
+                            path: editor.project_path.clone(),
+                            plan_width: editor.plan_width,
+                            plan_height: editor.plan_height,
+                            wall_thickness: editor.wall_thickness,
+                            wall_height: editor.wall_height,
+                        });
+                        ui.close();
+                    }
+                    if ui.button(s.menu_project_settings).clicked() {
+                        editor.project_dialog = Some(ProjectDialogState {
+                            is_new: false,
+                            name: editor.project.name.clone(),
+                            path: editor.project_path.clone(),
+                            plan_width: editor.plan_width,
+                            plan_height: editor.plan_height,
+                            wall_thickness: editor.wall_thickness,
+                            wall_height: editor.wall_height,
+                        });
                         ui.close();
                     }
                     ui.separator();
                     if ui.button(s.menu_open_h3d).clicked() {
-                        let p = editor.project_path.clone();
-                        load_project_from(&mut editor, &p);
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Homely 3D", &["h3d"])
+                            .pick_file()
+                        {
+                            let p = path.to_string_lossy().to_string();
+                            editor.project_path = p.clone();
+                            load_project_from(&mut editor, &p);
+                        }
                         ui.close();
                     }
                     if ui.button(s.menu_save_h3d).clicked() {
@@ -142,9 +171,27 @@ pub fn draw_dock_ui(
                         save_project_to(&mut editor, &p);
                         ui.close();
                     }
+                    if ui.button(s.menu_save_as).clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Homely 3D", &["h3d"])
+                            .set_file_name(&editor.project_path)
+                            .save_file()
+                        {
+                            let p = path.to_string_lossy().to_string();
+                            editor.project_path = p.clone();
+                            save_project_to(&mut editor, &p);
+                        }
+                        ui.close();
+                    }
                     if ui.button(s.menu_import_sh3x).clicked() {
-                        let p = editor.import_sh3x_path.clone();
-                        load_project_from(&mut editor, &p);
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("SH3X Archive", &["sh3x"])
+                            .pick_file()
+                        {
+                            let p = path.to_string_lossy().to_string();
+                            editor.import_sh3x_path = p.clone();
+                            load_project_from(&mut editor, &p);
+                        }
                         ui.close();
                     }
                     ui.separator();
@@ -309,6 +356,7 @@ pub fn draw_dock_ui(
     });
 
     draw_context_menu(ctx, &mut editor);
+    draw_project_dialog(ctx, &mut editor);
 
     // Floating ghost badge while dragging a catalog Door/Window onto a wall
     if let Some(ref item) = editor.dragging_catalog_item {
@@ -725,11 +773,12 @@ fn handle_2d_input(
     world_to_screen: &impl Fn(f64, f64) -> egui::Pos2,
     screen_to_world: &impl Fn(egui::Pos2) -> (f64, f64),
 ) {
-    let (primary_pressed, primary_down, secondary_clicked) = ui.input(|i| {
+    let (primary_pressed, primary_down, secondary_clicked, alt_held) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
             i.pointer.secondary_clicked(),
+            i.modifiers.alt,
         )
     });
 
@@ -791,6 +840,13 @@ fn handle_2d_input(
             if ctrl_held {
                 handle_ctrl_left_click(editor, pos, world_to_screen, screen_to_world);
                 return;
+            }
+            if alt_held {
+                let (wx, wy) = screen_to_world(pos);
+                if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
+                    start_building_drag(editor, &wid, wx, wy);
+                    return;
+                }
             }
 
             // Standard mode (no modifier): select/drag handle, anchor, or wall
@@ -867,6 +923,50 @@ fn handle_2d_input(
             }
 
             editor.drag_state = started_drag;
+        }
+    }
+
+    // Active building move (Alt+Drag or Context Menu -> Move Building)
+    if let Some(mut bdrag) = editor.building_drag.take() {
+        if primary_down {
+            if let Some(pos) = pointer_pos {
+                let (wx, wy) = screen_to_world(pos);
+                let total_dx = snap_10cm(wx - bdrag.start_world.0);
+                let total_dy = snap_10cm(wy - bdrag.start_world.1);
+                let step_dx = total_dx - bdrag.applied_dx;
+                let step_dy = total_dy - bdrag.applied_dy;
+                if step_dx.abs() > 1e-9 || step_dy.abs() > 1e-9 {
+                    let _ = ProjectCommand::MoveBuilding {
+                        wall_ids: bdrag.wall_ids.clone(),
+                        furniture_ids: bdrag.furniture_ids.clone(),
+                        dx: step_dx,
+                        dy: step_dy,
+                    }
+                    .apply(&mut editor.project);
+                    bdrag.applied_dx = total_dx;
+                    bdrag.applied_dy = total_dy;
+                    editor.dirty_3d = true;
+                }
+            }
+            editor.building_drag = Some(bdrag);
+            return;
+        } else if bdrag.applied_dx.abs() > 1e-9 || bdrag.applied_dy.abs() > 1e-9 {
+            // Undo temporary preview delta and record as a single reversible MoveBuilding command
+            let _ = ProjectCommand::MoveBuilding {
+                wall_ids: bdrag.wall_ids.clone(),
+                furniture_ids: bdrag.furniture_ids.clone(),
+                dx: -bdrag.applied_dx,
+                dy: -bdrag.applied_dy,
+            }
+            .apply(&mut editor.project);
+            editor.execute_cmd(ProjectCommand::MoveBuilding {
+                wall_ids: bdrag.wall_ids,
+                furniture_ids: bdrag.furniture_ids,
+                dx: bdrag.applied_dx,
+                dy: bdrag.applied_dy,
+            });
+            editor.status = "Moved building.".into();
+            return;
         }
     }
 
@@ -958,6 +1058,54 @@ fn handle_2d_input(
             editor.execute_cmd(ProjectCommand::Batch(cmds));
         }
     }
+}
+
+fn start_building_drag(editor: &mut EditorState, seed_wall_id: &str, wx: f64, wy: f64) {
+    let level_walls: Vec<Wall> = editor
+        .project
+        .walls
+        .iter()
+        .filter(|w| w.level_id == editor.active_level_id)
+        .cloned()
+        .collect();
+    let wall_ids = collect_connected_building_walls(&level_walls, seed_wall_id);
+    if wall_ids.is_empty() {
+        return;
+    }
+
+    let building_walls: Vec<Wall> = level_walls
+        .into_iter()
+        .filter(|w| wall_ids.contains(&w.id))
+        .collect();
+    let building_rooms = detect_rooms(&building_walls, 2.6);
+    let furniture_ids: Vec<String> = editor
+        .project
+        .furniture
+        .iter()
+        .filter(|f| {
+            f.level_id == editor.active_level_id
+                && (f
+                    .wall_mount_wall_id
+                    .as_ref()
+                    .is_some_and(|wid| wall_ids.contains(wid))
+                    || building_rooms.iter().any(|r| {
+                        point_in_polygon(
+                            homely_core::geometry::Vec2::new(f.transform.pos_x, f.transform.pos_z),
+                            &r.polygon,
+                        )
+                    }))
+        })
+        .map(|f| f.id.clone())
+        .collect();
+
+    editor.status = format!("Moving building ({} walls)...", wall_ids.len());
+    editor.building_drag = Some(BuildingDragState {
+        wall_ids,
+        furniture_ids,
+        start_world: (wx, wy),
+        applied_dx: 0.0,
+        applied_dy: 0.0,
+    });
 }
 
 fn advance_building_mode(
@@ -1180,6 +1328,7 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                                     s.ctx_insert_door,
                                     s.ctx_insert_window,
                                     s.ctx_insert_point,
+                                    s.ctx_move_building,
                                     s.ctx_delete_wall,
                                 ],
                             );
@@ -1197,6 +1346,10 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                                 let sx = snap_10cm(wx).clamp(0.0, editor.plan_width);
                                 let sy = snap_10cm(wy).clamp(0.0, editor.plan_height);
                                 split_wall_at_point(editor, wall_id, sx, sy);
+                                close_menu = true;
+                            }
+                            if context_menu_item(ui, s.ctx_move_building, w) {
+                                start_building_drag(editor, wall_id, wx, wy);
                                 close_menu = true;
                             }
                             if context_menu_item(ui, s.ctx_delete_wall, w) {
@@ -1783,69 +1936,95 @@ fn draw_history_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
     }
 }
 
+fn draw_project_dialog(ctx: &egui::Context, editor: &mut EditorState) {
+    let Some(mut dlg) = editor.project_dialog.clone() else {
+        return;
+    };
+    let s = tr(editor.lang);
+    let title = if dlg.is_new {
+        s.menu_new
+    } else {
+        s.menu_project_settings
+    };
+
+    let mut close_dialog = false;
+    let mut commit_dialog = false;
+
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_min_width(360.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.name));
+                ui.text_edit_singleline(&mut dlg.name);
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.dlg_location));
+                ui.text_edit_singleline(&mut dlg.path);
+                if ui.button(s.dlg_browse).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Homely 3D", &["h3d"])
+                        .set_file_name(&dlg.path)
+                        .save_file()
+                    {
+                        dlg.path = path.to_string_lossy().to_string();
+                    }
+                }
+            });
+            ui.separator();
+            ui.label(s.plan_size);
+            ui.horizontal(|ui| {
+                ui.label("W:");
+                ui.add(egui::DragValue::new(&mut dlg.plan_width).speed(0.5).range(2.0..=200.0).suffix(" m"));
+                ui.label("H:");
+                ui.add(egui::DragValue::new(&mut dlg.plan_height).speed(0.5).range(2.0..=200.0).suffix(" m"));
+            });
+            ui.separator();
+            ui.label(s.new_wall_defaults);
+            ui.add(egui::Slider::new(&mut dlg.wall_thickness, 0.08..=0.60).text(format!("{} (m)", s.thickness)));
+            ui.add(egui::Slider::new(&mut dlg.wall_height, 1.0..=5.0).text(format!("{} (m)", s.height)));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(if dlg.is_new { s.dlg_create } else { s.dlg_apply }).clicked() {
+                    commit_dialog = true;
+                    close_dialog = true;
+                }
+                if ui.button(s.dlg_cancel).clicked() {
+                    close_dialog = true;
+                }
+            });
+        });
+
+    if commit_dialog {
+        if dlg.is_new {
+            editor.reset_new_project();
+        }
+        editor.project.name = dlg.name.clone();
+        editor.project_path = dlg.path.clone();
+        editor.plan_width = dlg.plan_width;
+        editor.plan_height = dlg.plan_height;
+        editor.wall_thickness = dlg.wall_thickness;
+        editor.wall_height = dlg.wall_height;
+        editor.dirty_3d = true;
+        if dlg.is_new {
+            save_project_to(editor, &dlg.path);
+        } else {
+            editor.status = format!("{}: {}", s.menu_project_settings, editor.project.name);
+        }
+    }
+
+    if close_dialog {
+        editor.project_dialog = None;
+    } else {
+        editor.project_dialog = Some(dlg);
+    }
+}
+
 fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
     let s = tr(editor.lang);
     draw_navigator_overview(ui, editor);
-    ui.separator();
-
-    ui.heading(s.plan_size);
-    let mut size_changed = false;
-    ui.horizontal(|ui| {
-        ui.label("W:");
-        size_changed |= ui
-            .add(
-                egui::DragValue::new(&mut editor.plan_width)
-                    .speed(0.5)
-                    .range(2.0..=200.0)
-                    .suffix(" m"),
-            )
-            .changed();
-        ui.label("H:");
-        size_changed |= ui
-            .add(
-                egui::DragValue::new(&mut editor.plan_height)
-                    .speed(0.5)
-                    .range(2.0..=200.0)
-                    .suffix(" m"),
-            )
-            .changed();
-    });
-    if size_changed {
-        editor.dirty_3d = true;
-    }
-
-    ui.separator();
-    ui.heading(s.project);
-    ui.label(format!("{}: {}", s.name, editor.project.name));
-    ui.label(format!("{}: {}", s.walls, editor.project.walls.len()));
-
-    ui.horizontal(|ui| {
-        ui.label(format!("{}:", s.file));
-        ui.text_edit_singleline(&mut editor.project_path);
-    });
-    ui.horizontal(|ui| {
-        if ui.button(s.save_h3d).clicked() {
-            let p = editor.project_path.clone();
-            save_project_to(editor, &p);
-        }
-        if ui.button(s.load_h3d).clicked() {
-            let p = editor.project_path.clone();
-            load_project_from(editor, &p);
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.text_edit_singleline(&mut editor.import_sh3x_path);
-        if ui.button(s.import_sh3x).clicked() {
-            let p = editor.import_sh3x_path.clone();
-            load_project_from(editor, &p);
-        }
-    });
-
-    ui.separator();
-    ui.heading(s.new_wall_defaults);
-    ui.add(egui::Slider::new(&mut editor.wall_thickness, 0.08..=0.60).text(format!("{} (m)", s.thickness)));
-    ui.add(egui::Slider::new(&mut editor.wall_height, 1.0..=5.0).text(format!("{} (m)", s.height)));
-
     ui.separator();
     draw_scene_tree(ui, editor);
 

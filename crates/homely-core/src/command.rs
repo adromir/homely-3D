@@ -52,6 +52,12 @@ pub enum ProjectCommand {
     RemoveFurniture {
         item_id: String,
     },
+    MoveBuilding {
+        wall_ids: Vec<String>,
+        furniture_ids: Vec<String>,
+        dx: f64,
+        dy: f64,
+    },
     Batch(Vec<ProjectCommand>),
 }
 
@@ -85,6 +91,7 @@ impl ProjectCommand {
             Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
             Self::PlaceFurniture(f) => format!("Place {}", f.catalog_item_id),
             Self::RemoveFurniture { item_id } => format!("Remove {item_id}"),
+            Self::MoveBuilding { wall_ids, .. } => format!("Move Building ({} walls)", wall_ids.len()),
             Self::Batch(cmds) => format!("Shared Corner ({} walls)", cmds.len()),
         }
     }
@@ -293,6 +300,45 @@ impl ProjectCommand {
                 let idx = find_index(&project.furniture, item_id, |f| &f.id, "furniture")?;
                 let removed = project.furniture.remove(idx);
                 Ok(Self::PlaceFurniture(removed))
+            }
+            Self::MoveBuilding {
+                wall_ids,
+                furniture_ids,
+                dx,
+                dy,
+            } => {
+                for wall in &mut project.walls {
+                    if wall_ids.iter().any(|id| id == &wall.id) {
+                        for a in &mut wall.anchors {
+                            a.pos_x += dx;
+                            a.pos_y += dy;
+                            if let Some(ref mut ix) = a.handle_in_x {
+                                *ix += dx;
+                            }
+                            if let Some(ref mut iy) = a.handle_in_y {
+                                *iy += dy;
+                            }
+                            if let Some(ref mut ox) = a.handle_out_x {
+                                *ox += dx;
+                            }
+                            if let Some(ref mut oy) = a.handle_out_y {
+                                *oy += dy;
+                            }
+                        }
+                    }
+                }
+                for item in &mut project.furniture {
+                    if furniture_ids.iter().any(|id| id == &item.id) {
+                        item.transform.pos_x += dx;
+                        item.transform.pos_z += dy;
+                    }
+                }
+                Ok(Self::MoveBuilding {
+                    wall_ids: wall_ids.clone(),
+                    furniture_ids: furniture_ids.clone(),
+                    dx: -dx,
+                    dy: -dy,
+                })
             }
             Self::Batch(cmds) => {
                 let mut inverses = Vec::with_capacity(cmds.len());

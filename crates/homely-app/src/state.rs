@@ -45,6 +45,26 @@ pub struct ContextMenuState {
     pub kind: ContextMenuKind,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProjectDialogState {
+    pub is_new: bool,
+    pub name: String,
+    pub path: String,
+    pub plan_width: f64,
+    pub plan_height: f64,
+    pub wall_thickness: f32,
+    pub wall_height: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingDragState {
+    pub wall_ids: Vec<String>,
+    pub furniture_ids: Vec<String>,
+    pub start_world: (f64, f64),
+    pub applied_dx: f64,
+    pub applied_dy: f64,
+}
+
 /// Central Bevy resource holding the active project, undo/redo history, and 2D/3D editor state.
 #[derive(Resource)]
 pub struct EditorState {
@@ -57,6 +77,8 @@ pub struct EditorState {
     pub selected_opening_id: Option<String>,
     pub selected_room_sig: Option<String>,
     pub drag_state: Option<DragAnchorState>,
+    pub building_drag: Option<BuildingDragState>,
+    pub project_dialog: Option<ProjectDialogState>,
     pub catalog: Vec<CatalogItem>,
     pub dragging_catalog_item: Option<CatalogItem>,
     /// Active start point when chaining new 2-point walls with `Ctrl + Left-click`.
@@ -144,6 +166,8 @@ impl Default for EditorState {
             selected_opening_id: None,
             selected_room_sig: None,
             drag_state: None,
+            building_drag: None,
+            project_dialog: None,
             catalog: builtin_catalog(),
             dragging_catalog_item: None,
             active_draw_from: None,

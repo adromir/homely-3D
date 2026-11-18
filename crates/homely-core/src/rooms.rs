@@ -117,6 +117,52 @@ pub fn detect_rooms(walls: &[Wall], level_height: f64) -> Vec<DetectedRoom> {
     rooms
 }
 
+/// Collects all wall IDs on a level that belong to the same connected building
+/// component as `seed_wall_id` (via shared endpoints within 1 mm).
+pub fn collect_connected_building_walls(walls: &[Wall], seed_wall_id: &str) -> Vec<String> {
+    let Some(seed_idx) = walls.iter().position(|w| w.id == seed_wall_id) else {
+        return Vec::new();
+    };
+    let mut visited = vec![false; walls.len()];
+    let mut queue = std::collections::VecDeque::new();
+    visited[seed_idx] = true;
+    queue.push_back(seed_idx);
+
+    let endpoints = |w: &Wall| -> Vec<Vec2> {
+        if w.anchors.is_empty() {
+            return Vec::new();
+        }
+        let mut pts = vec![Vec2::new(w.anchors[0].pos_x, w.anchors[0].pos_y)];
+        if w.anchors.len() > 1 {
+            let last = &w.anchors[w.anchors.len() - 1];
+            pts.push(Vec2::new(last.pos_x, last.pos_y));
+        }
+        pts
+    };
+
+    let mut result = Vec::new();
+    while let Some(idx) = queue.pop_front() {
+        result.push(walls[idx].id.clone());
+        let pts_a = endpoints(&walls[idx]);
+        for (oi, other) in walls.iter().enumerate() {
+            if visited[oi] {
+                continue;
+            }
+            let pts_b = endpoints(other);
+            let touches = pts_a.iter().any(|pa| {
+                pts_b
+                    .iter()
+                    .any(|pb| ((pa.x - pb.x).powi(2) + (pa.y - pb.y).powi(2)).sqrt() < 1e-3)
+            });
+            if touches {
+                visited[oi] = true;
+                queue.push_back(oi);
+            }
+        }
+    }
+    result
+}
+
 /// Computes a canonical signature for a detected room polygon so custom names
 /// persist across geometry updates.
 pub fn room_signature(poly: &[Vec2]) -> String {

@@ -11,3 +11,4 @@ bevy_egui = "0.43"
 egui_dock = "0.21"
 homely-core = { path = "../homely-core" }
 homely-viewer3d = { path = "../homely-viewer3d" }
+rfd = "0.15"
