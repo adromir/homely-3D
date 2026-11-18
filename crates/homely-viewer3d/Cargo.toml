@@ -1,0 +1,10 @@
+[package]
+name = "homely-viewer3d"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = "0.20"
+homely-core = { path = "../homely-core" }

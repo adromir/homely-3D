@@ -9,6 +9,8 @@
 pub mod command;
 pub mod db;
 pub mod geometry;
+pub mod rooms;
+pub mod sh3x;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -37,6 +39,15 @@ pub enum CoreError {
 
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("archive error: {0}")]
+    Archive(#[from] zip::result::ZipError),
 }
 
 /// Kind of binary asset stored in a `.sh3x` container.

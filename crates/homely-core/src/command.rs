@@ -19,6 +19,22 @@ pub enum ProjectCommand {
         anchor_index: usize,
         anchor: WallAnchorPoint,
     },
+    InsertWallAnchor {
+        wall_id: String,
+        anchor_index: usize,
+        anchor: WallAnchorPoint,
+    },
+    RemoveWallAnchor {
+        wall_id: String,
+        anchor_index: usize,
+    },
+    UpdateWallProperties {
+        wall_id: String,
+        thickness: f64,
+        start_height: f64,
+        end_height: f64,
+        is_closed_loop: bool,
+    },
     AddOpening(Opening),
     RemoveOpening {
         opening_id: String,
@@ -27,9 +43,40 @@ pub enum ProjectCommand {
     RemoveFurniture {
         item_id: String,
     },
+    Batch(Vec<ProjectCommand>),
 }
 
 impl ProjectCommand {
+    /// Human-readable short description for UI history panels.
+    pub fn label(&self) -> String {
+        match self {
+            Self::AddLevel(l) => format!("Add Level '{}'", l.name),
+            Self::RemoveLevel { level_id } => format!("Remove Level {level_id}"),
+            Self::AddWall(w) => format!("Add Wall {}", w.id),
+            Self::RemoveWall { wall_id } => format!("Remove Wall {wall_id}"),
+            Self::UpdateWallAnchor {
+                wall_id,
+                anchor_index,
+                ..
+            } => format!("Move {wall_id} #{anchor_index}"),
+            Self::InsertWallAnchor {
+                wall_id,
+                anchor_index,
+                ..
+            } => format!("Insert {wall_id} #{anchor_index}"),
+            Self::RemoveWallAnchor {
+                wall_id,
+                anchor_index,
+            } => format!("Remove {wall_id} #{anchor_index}"),
+            Self::UpdateWallProperties { wall_id, .. } => format!("Edit Wall {wall_id}"),
+            Self::AddOpening(o) => format!("Add Opening {}", o.id),
+            Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
+            Self::PlaceFurniture(f) => format!("Place {}", f.catalog_item_id),
+            Self::RemoveFurniture { item_id } => format!("Remove {item_id}"),
+            Self::Batch(cmds) => format!("Shared Corner ({} walls)", cmds.len()),
+        }
+    }
+
     /// Applies the command to `project` and returns its exact inverse command.
     pub fn apply(&self, project: &mut Project) -> Result<Self, CoreError> {
         match self {
@@ -86,6 +133,86 @@ impl ProjectCommand {
                     anchor: previous,
                 })
             }
+            Self::InsertWallAnchor {
+                wall_id,
+                anchor_index,
+                anchor,
+            } => {
+                let wall = project
+                    .walls
+                    .iter_mut()
+                    .find(|w| w.id == *wall_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "wall",
+                        id: wall_id.clone(),
+                    })?;
+                if *anchor_index > wall.anchors.len() {
+                    return Err(CoreError::InvalidIndex {
+                        kind: "wall_anchor",
+                        id: wall_id.clone(),
+                        index: *anchor_index,
+                    });
+                }
+                wall.anchors.insert(*anchor_index, anchor.clone());
+                Ok(Self::RemoveWallAnchor {
+                    wall_id: wall_id.clone(),
+                    anchor_index: *anchor_index,
+                })
+            }
+            Self::RemoveWallAnchor {
+                wall_id,
+                anchor_index,
+            } => {
+                let wall = project
+                    .walls
+                    .iter_mut()
+                    .find(|w| w.id == *wall_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "wall",
+                        id: wall_id.clone(),
+                    })?;
+                if *anchor_index >= wall.anchors.len() {
+                    return Err(CoreError::InvalidIndex {
+                        kind: "wall_anchor",
+                        id: wall_id.clone(),
+                        index: *anchor_index,
+                    });
+                }
+                let removed = wall.anchors.remove(*anchor_index);
+                Ok(Self::InsertWallAnchor {
+                    wall_id: wall_id.clone(),
+                    anchor_index: *anchor_index,
+                    anchor: removed,
+                })
+            }
+            Self::UpdateWallProperties {
+                wall_id,
+                thickness,
+                start_height,
+                end_height,
+                is_closed_loop,
+            } => {
+                let wall = project
+                    .walls
+                    .iter_mut()
+                    .find(|w| w.id == *wall_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "wall",
+                        id: wall_id.clone(),
+                    })?;
+                let prev = Self::UpdateWallProperties {
+                    wall_id: wall_id.clone(),
+                    thickness: wall.thickness,
+                    start_height: wall.start_height,
+                    end_height: wall.end_height,
+                    is_closed_loop: wall.is_closed_loop,
+                };
+                wall.thickness = *thickness;
+                wall.start_height = *start_height;
+                wall.end_height = *end_height;
+                wall.is_closed_loop = *is_closed_loop;
+                Ok(prev)
+            }
             Self::AddOpening(opening) => {
                 ensure_exists(&project.walls, &opening.wall_id, |w| &w.id, "wall")?;
                 ensure_unique(&project.openings, &opening.id, |o| &o.id, "opening")?;
@@ -111,6 +238,14 @@ impl ProjectCommand {
                 let idx = find_index(&project.furniture, item_id, |f| &f.id, "furniture")?;
                 let removed = project.furniture.remove(idx);
                 Ok(Self::PlaceFurniture(removed))
+            }
+            Self::Batch(cmds) => {
+                let mut inverses = Vec::with_capacity(cmds.len());
+                for cmd in cmds {
+                    inverses.push(cmd.apply(project)?);
+                }
+                inverses.reverse();
+                Ok(Self::Batch(inverses))
             }
         }
     }
@@ -207,6 +342,59 @@ impl CommandHistory {
 
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
+    }
+
+    pub fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// Labels of executed steps from oldest to newest.
+    /// Note: `undo_stack` stores inverses, so we map the inverse label cleanly.
+    pub fn undo_labels(&self) -> Vec<String> {
+        self.undo_stack.iter().map(inverse_action_label).collect()
+    }
+
+    /// Labels of undone steps from next-to-redo to oldest.
+    pub fn redo_labels(&self) -> Vec<String> {
+        self.redo_stack.iter().rev().map(ProjectCommand::label).collect()
+    }
+
+    /// Jumps to a specific `target_undo_len` by undoing or redoing steps.
+    pub fn jump_to(&mut self, project: &mut Project, target_undo_len: usize) -> Result<(), CoreError> {
+        while self.undo_stack.len() > target_undo_len {
+            if !self.undo(project)? {
+                break;
+            }
+        }
+        while self.undo_stack.len() < target_undo_len {
+            if !self.redo(project)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn inverse_action_label(inverse: &ProjectCommand) -> String {
+    match inverse {
+        ProjectCommand::RemoveLevel { level_id } => format!("Add Level {level_id}"),
+        ProjectCommand::AddLevel(l) => format!("Remove Level '{}'", l.name),
+        ProjectCommand::RemoveWall { wall_id } => format!("Add Wall {wall_id}"),
+        ProjectCommand::AddWall(w) => format!("Remove Wall {}", w.id),
+        ProjectCommand::RemoveWallAnchor {
+            wall_id,
+            anchor_index,
+        } => format!("Insert {wall_id} #{anchor_index}"),
+        ProjectCommand::InsertWallAnchor {
+            wall_id,
+            anchor_index,
+            ..
+        } => format!("Remove {wall_id} #{anchor_index}"),
+        ProjectCommand::RemoveOpening { opening_id } => format!("Add Opening {opening_id}"),
+        ProjectCommand::AddOpening(o) => format!("Remove Opening {}", o.id),
+        ProjectCommand::RemoveFurniture { item_id } => format!("Place {item_id}"),
+        ProjectCommand::PlaceFurniture(f) => format!("Remove {}", f.catalog_item_id),
+        other => other.label(),
     }
 }
 

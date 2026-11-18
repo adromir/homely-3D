@@ -156,47 +156,187 @@ fn is_flat(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, tol: f64) -> bool {
     d1 <= tol && d2 <= tol
 }
 
-/// Offsets a 2D centerline polyline by `thickness / 2.0` on both sides,
-/// returning a closed 2D footprint polygon (counter-clockwise outer boundary).
-pub fn wall_footprint_polygon(centerline: &[Vec2], thickness: f64) -> Vec<Vec2> {
+/// Computes mitered `(left, right)` offset pairs for every wall in `walls`,
+/// taking neighboring walls that meet at shared endpoints into account so
+/// 2-point walls form seamless corners at any angle.
+pub fn compute_level_wall_offsets(
+    walls: &[Wall],
+    flatness_tolerance: f64,
+) -> Vec<Vec<(Vec2, Vec2)>> {
+    let centerlines: Vec<Vec<Vec2>> = walls
+        .iter()
+        .map(|w| tessellate_wall_centerline(w, flatness_tolerance))
+        .collect();
+
+    let mut result = Vec::with_capacity(walls.len());
+    for (wi, wall) in walls.iter().enumerate() {
+        let pts = &centerlines[wi];
+        let mut pairs = wall_offset_pairs(pts, wall.thickness, wall.is_closed_loop);
+        if pairs.len() < 2 || wall.is_closed_loop {
+            result.push(pairs);
+            continue;
+        }
+
+        let half = wall.thickness * 0.5;
+        let last_idx = pts.len() - 1;
+
+        // Miter start endpoint if exactly 1 neighbor wall meets at pts[0]
+        if let Some(n_dir_in) = find_single_neighbor_dir_into(wi, pts[0], &centerlines) {
+            if let Some(w_dir_out) = pts[1].sub(pts[0]).normalized() {
+                let n1 = n_dir_in.perp_left();
+                let n2 = w_dir_out.perp_left();
+                if let Some(avg) = n1.add(n2).normalized() {
+                    let cos_half = avg.dot(n2).max(0.25);
+                    let offset = avg.scale(half / cos_half);
+                    pairs[0] = (pts[0].add(offset), pts[0].sub(offset));
+                }
+            }
+        }
+
+        // Miter end endpoint if exactly 1 neighbor wall meets at pts[last_idx]
+        if let Some(n_dir_out) = find_single_neighbor_dir_out(wi, pts[last_idx], &centerlines) {
+            if let Some(w_dir_in) = pts[last_idx].sub(pts[last_idx - 1]).normalized() {
+                let n1 = w_dir_in.perp_left();
+                let n2 = n_dir_out.perp_left();
+                if let Some(avg) = n1.add(n2).normalized() {
+                    let cos_half = avg.dot(n1).max(0.25);
+                    let offset = avg.scale(half / cos_half);
+                    pairs[last_idx] = (pts[last_idx].add(offset), pts[last_idx].sub(offset));
+                }
+            }
+        }
+
+        result.push(pairs);
+    }
+    result
+}
+
+fn find_single_neighbor_dir_into(
+    self_idx: usize,
+    endpoint: Vec2,
+    centerlines: &[Vec<Vec2>],
+) -> Option<Vec2> {
+    let mut dirs = Vec::new();
+    for (oi, pts) in centerlines.iter().enumerate() {
+        if oi == self_idx || pts.len() < 2 {
+            continue;
+        }
+        if pts[pts.len() - 1].sub(endpoint).len() < 1e-4 {
+            if let Some(d) = pts[pts.len() - 1].sub(pts[pts.len() - 2]).normalized() {
+                dirs.push(d);
+            }
+        } else if pts[0].sub(endpoint).len() < 1e-4 {
+            // Neighbor also starts here: its incoming direction into endpoint is reversed
+            if let Some(d) = pts[0].sub(pts[1]).normalized() {
+                dirs.push(d);
+            }
+        }
+    }
+    if dirs.len() == 1 {
+        Some(dirs[0])
+    } else {
+        None
+    }
+}
+
+fn find_single_neighbor_dir_out(
+    self_idx: usize,
+    endpoint: Vec2,
+    centerlines: &[Vec<Vec2>],
+) -> Option<Vec2> {
+    let mut dirs = Vec::new();
+    for (oi, pts) in centerlines.iter().enumerate() {
+        if oi == self_idx || pts.len() < 2 {
+            continue;
+        }
+        if pts[0].sub(endpoint).len() < 1e-4 {
+            if let Some(d) = pts[1].sub(pts[0]).normalized() {
+                dirs.push(d);
+            }
+        } else if pts[pts.len() - 1].sub(endpoint).len() < 1e-4 {
+            // Neighbor also ends here: its outgoing direction away from endpoint is reversed
+            if let Some(d) = pts[pts.len() - 2].sub(pts[pts.len() - 1]).normalized() {
+                dirs.push(d);
+            }
+        }
+    }
+    if dirs.len() == 1 {
+        Some(dirs[0])
+    } else {
+        None
+    }
+}
+
+/// Computes mitered `(left, right)` 2D offset pairs along `centerline`.
+///
+/// When `is_closed` is `true`, the first and last vertices wrap around so closed
+/// room corners are mitered seamlessly at any angle.
+pub fn wall_offset_pairs(
+    centerline: &[Vec2],
+    thickness: f64,
+    is_closed: bool,
+) -> Vec<(Vec2, Vec2)> {
     if centerline.len() < 2 || thickness <= 0.0 {
         return Vec::new();
     }
 
     let half = thickness * 0.5;
     let n = centerline.len();
-    let mut left = Vec::with_capacity(n);
-    let mut right = Vec::with_capacity(n);
+    let mut pairs = Vec::with_capacity(n);
 
     for i in 0..n {
-        let normal = vertex_normal(centerline, i);
+        let normal = vertex_normal(centerline, i, is_closed);
         let offset = normal.scale(half);
-        left.push(centerline[i].add(offset));
-        right.push(centerline[i].sub(offset));
+        pairs.push((centerline[i].add(offset), centerline[i].sub(offset)));
     }
 
-    let mut polygon = left;
-    polygon.extend(right.into_iter().rev());
+    pairs
+}
+
+/// Offsets a 2D centerline polyline by `thickness / 2.0` on both sides,
+/// returning a closed 2D footprint polygon.
+pub fn wall_footprint_polygon(centerline: &[Vec2], thickness: f64) -> Vec<Vec2> {
+    let pairs = wall_offset_pairs(centerline, thickness, false);
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let mut polygon: Vec<Vec2> = pairs.iter().map(|(l, _)| *l).collect();
+    polygon.extend(pairs.iter().rev().map(|(_, r)| *r));
     polygon
 }
 
-fn vertex_normal(pts: &[Vec2], idx: usize) -> Vec2 {
-    let prev_n = if idx > 0 {
-        pts[idx].sub(pts[idx - 1]).normalized().map(Vec2::perp_left)
+fn vertex_normal(pts: &[Vec2], idx: usize, is_closed: bool) -> Vec2 {
+    let n = pts.len();
+    let joined_ends = n >= 3 && pts[0].sub(pts[n - 1]).len() < 1e-6;
+
+    let prev_pt = if idx > 0 {
+        Some(pts[idx - 1])
+    } else if joined_ends {
+        Some(pts[n - 2])
+    } else if is_closed && n >= 2 {
+        Some(pts[n - 1])
     } else {
         None
     };
-    let next_n = if idx + 1 < pts.len() {
-        pts[idx + 1].sub(pts[idx]).normalized().map(Vec2::perp_left)
+
+    let next_pt = if idx + 1 < n {
+        Some(pts[idx + 1])
+    } else if joined_ends {
+        Some(pts[1])
+    } else if is_closed && n >= 2 {
+        Some(pts[0])
     } else {
         None
     };
+
+    let prev_n = prev_pt.and_then(|p| pts[idx].sub(p).normalized().map(Vec2::perp_left));
+    let next_n = next_pt.and_then(|p| p.sub(pts[idx]).normalized().map(Vec2::perp_left));
 
     match (prev_n, next_n) {
         (Some(n1), Some(n2)) => {
             let avg = n1.add(n2).normalized().unwrap_or(n1);
-            // Miter scale clamped to avoid spikes on acute corners
-            let cos_half = avg.dot(n1).max(0.35);
+            // Miter scale clamped to avoid extreme spikes on very acute corners
+            let cos_half = avg.dot(n1).max(0.25);
             avg.scale(1.0 / cos_half)
         }
         (Some(n1), None) => n1,

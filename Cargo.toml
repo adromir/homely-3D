@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/homely-core",
+    "crates/homely-viewer3d",
     "crates/homely-app",
     "crates/homely-mcp",
 ]
