@@ -16,6 +16,113 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+pub const METERS_PER_FOOT: f64 = 0.3048;
+pub const METERS_PER_INCH: f64 = 0.0254;
+pub const SQFT_PER_SQM: f64 = 10.763_910_416_7;
+
+/// Display and input measurement system (internal storage is always meters).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitSystem {
+    #[default]
+    Metric,
+    Imperial,
+}
+
+impl UnitSystem {
+    pub fn meters_to_display_len(self, m: f64) -> f64 {
+        match self {
+            Self::Metric => m,
+            Self::Imperial => m / METERS_PER_FOOT,
+        }
+    }
+
+    pub fn display_len_to_meters(self, val: f64) -> f64 {
+        match self {
+            Self::Metric => val,
+            Self::Imperial => val * METERS_PER_FOOT,
+        }
+    }
+
+    pub fn meters_to_inches(m: f64) -> f64 {
+        m / METERS_PER_INCH
+    }
+
+    pub fn inches_to_meters(inches: f64) -> f64 {
+        inches * METERS_PER_INCH
+    }
+
+    pub fn sqm_to_display_area(self, sqm: f64) -> f64 {
+        match self {
+            Self::Metric => sqm,
+            Self::Imperial => sqm * SQFT_PER_SQM,
+        }
+    }
+
+    pub fn area_suffix(self) -> &'static str {
+        match self {
+            Self::Metric => "m²",
+            Self::Imperial => "sq ft",
+        }
+    }
+
+    pub fn len_suffix(self) -> &'static str {
+        match self {
+            Self::Metric => "m",
+            Self::Imperial => "ft",
+        }
+    }
+}
+
+/// Regional building standard presets providing typical wall thicknesses and ceiling heights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildingPreset {
+    #[default]
+    GermanyDin,
+    UsaIrc,
+    UkStandard,
+    Custom,
+}
+
+impl BuildingPreset {
+    /// Returns `(unit_system, default_wall_thickness_m, default_wall_height_m)`.
+    pub fn defaults(self) -> (UnitSystem, f32, f32) {
+        match self {
+            // DIN: 24 cm exterior/masonry wall, 2.50 m ceiling height
+            Self::GermanyDin => (UnitSystem::Metric, 0.24, 2.50),
+            // US IRC: 4.5 in (2x4 + drywall) interior/standard wall, 8 ft (2.4384 m) ceiling
+            Self::UsaIrc => (UnitSystem::Imperial, 0.1143, 2.4384),
+            // UK: 30 cm cavity wall, 2.40 m ceiling height
+            Self::UkStandard => (UnitSystem::Metric, 0.30, 2.40),
+            Self::Custom => (UnitSystem::Metric, 0.24, 2.60),
+        }
+    }
+
+    /// Common wall thicknesses `(label, meters)` for quick selection.
+    pub fn wall_thickness_options(self) -> &'static [(&'static str, f32)] {
+        match self {
+            Self::GermanyDin => &[
+                ("11.5 cm (Innen)", 0.115),
+                ("17.5 cm (Tragend)", 0.175),
+                ("24.0 cm (Außen)", 0.24),
+                ("36.5 cm (Dämmziegel)", 0.365),
+            ],
+            Self::UsaIrc => &[
+                ("4.5 in (2x4)", 0.1143),
+                ("6.5 in (2x6)", 0.1651),
+                ("8.0 in (CMU)", 0.2032),
+            ],
+            Self::UkStandard => &[
+                ("10.0 cm (Partition)", 0.10),
+                ("21.5 cm (Solid)", 0.215),
+                ("30.0 cm (Cavity)", 0.30),
+            ],
+            Self::Custom => &[],
+        }
+    }
+}
+
 /// Errors returned by `homely-core` operations.
 #[derive(Debug, Error)]
 pub enum CoreError {

@@ -21,7 +21,8 @@ use homely_core::rooms::{
 };
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{
-    CatalogCategory, CatalogItem, Opening, OpeningType, PointType, Wall, WallAnchorPoint,
+    BuildingPreset, CatalogCategory, CatalogItem, Opening, OpeningType, PointType, UnitSystem,
+    Wall, WallAnchorPoint, METERS_PER_FOOT,
 };
 use std::path::Path;
 
@@ -157,6 +158,8 @@ pub fn draw_dock_ui(
                             is_new: true,
                             name: "Homely 3D Project".into(),
                             path: editor.project_path.clone(),
+                            unit_system: editor.unit_system,
+                            building_preset: editor.building_preset,
                             plan_width: editor.plan_width,
                             plan_height: editor.plan_height,
                             wall_thickness: editor.wall_thickness,
@@ -169,6 +172,8 @@ pub fn draw_dock_ui(
                             is_new: false,
                             name: editor.project.name.clone(),
                             path: editor.project_path.clone(),
+                            unit_system: editor.unit_system,
+                            building_preset: editor.building_preset,
                             plan_width: editor.plan_width,
                             plan_height: editor.plan_height,
                             wall_thickness: editor.wall_thickness,
@@ -474,28 +479,37 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
     );
     painter.rect_filled(plan_rect, 0.0, egui::Color32::from_rgb(28, 32, 38));
 
-    let max_mx = editor.plan_width.floor() as i32;
-    let max_my = editor.plan_height.floor() as i32;
+    let major_step_m = match editor.unit_system {
+        UnitSystem::Metric => 1.0_f64,
+        UnitSystem::Imperial => METERS_PER_FOOT,
+    };
+    let sub_divs: i32 = match editor.unit_system {
+        UnitSystem::Metric => 10,   // 10 cm
+        UnitSystem::Imperial => 4,  // 3 in (0.25 ft)
+    };
+    let max_mx = (editor.plan_width / major_step_m).floor() as i32;
+    let max_my = (editor.plan_height / major_step_m).floor() as i32;
 
-    if zoom >= 28.0 {
+    if zoom * (major_step_m as f32) >= 28.0 {
         let minor_color = egui::Color32::from_rgb(36, 41, 48);
-        let max_dx = (editor.plan_width * 10.0).round() as i32;
+        let minor_step_m = major_step_m / (sub_divs as f64);
+        let max_dx = (editor.plan_width / minor_step_m).round() as i32;
         for dx in 0..=max_dx {
-            if dx % 10 == 0 {
+            if dx % sub_divs == 0 {
                 continue;
             }
-            let x = origin.x + (dx as f32) * zoom * 0.1;
+            let x = origin.x + ((dx as f64 * minor_step_m) as f32) * zoom;
             painter.line_segment(
                 [egui::pos2(x, plan_rect.top()), egui::pos2(x, plan_rect.bottom())],
                 egui::Stroke::new(1.0, minor_color),
             );
         }
-        let max_dy = (editor.plan_height * 10.0).round() as i32;
+        let max_dy = (editor.plan_height / minor_step_m).round() as i32;
         for dy in 0..=max_dy {
-            if dy % 10 == 0 {
+            if dy % sub_divs == 0 {
                 continue;
             }
-            let y = origin.y + (dy as f32) * zoom * 0.1;
+            let y = origin.y + ((dy as f64 * minor_step_m) as f32) * zoom;
             painter.line_segment(
                 [egui::pos2(plan_rect.left(), y), egui::pos2(plan_rect.right(), y)],
                 egui::Stroke::new(1.0, minor_color),
@@ -505,7 +519,7 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
 
     let grid_color = egui::Color32::from_rgb(50, 56, 66);
     for gx in 0..=max_mx {
-        let x = origin.x + (gx as f32) * zoom;
+        let x = origin.x + ((gx as f64 * major_step_m) as f32) * zoom;
         let color = if gx == 0 {
             egui::Color32::from_rgba_unmultiplied(110, 200, 120, 180)
         } else {
@@ -517,7 +531,7 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         );
     }
     for gy in 0..=max_my {
-        let y = origin.y + (gy as f32) * zoom;
+        let y = origin.y + ((gy as f64 * major_step_m) as f32) * zoom;
         let color = if gy == 0 {
             egui::Color32::from_rgba_unmultiplied(220, 100, 100, 180)
         } else {
@@ -572,10 +586,12 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
             .filter(|n| !n.is_empty())
             .cloned()
             .unwrap_or(default_name);
+        let area_disp = editor.unit_system.sqm_to_display_area(room.area_sqm);
+        let area_unit = editor.unit_system.area_suffix();
         painter.text(
             cp,
             egui::Align2::CENTER_CENTER,
-            format!("{r_name}\n{:.2} m²", room.area_sqm),
+            format!("{r_name}\n{area_disp:.2}{area_unit}"),
             egui::FontId::proportional(12.0),
             egui::Color32::from_rgba_unmultiplied(220, 235, 225, 220),
         );
@@ -804,6 +820,7 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         max_my,
         editor.plan_width,
         editor.plan_height,
+        editor.unit_system,
         pointer_pos,
         &screen_to_world,
     );
@@ -976,8 +993,8 @@ fn handle_2d_input(
         if primary_down {
             if let Some(pos) = pointer_pos {
                 let (wx, wy) = screen_to_world(pos);
-                let total_dx = snap_10cm(wx - bdrag.start_world.0);
-                let total_dy = snap_10cm(wy - bdrag.start_world.1);
+                let total_dx = snap_grid(wx - bdrag.start_world.0, editor.unit_system);
+                let total_dy = snap_grid(wy - bdrag.start_world.1, editor.unit_system);
                 let step_dx = total_dx - bdrag.applied_dx;
                 let step_dy = total_dy - bdrag.applied_dy;
                 if step_dx.abs() > 1e-9 || step_dy.abs() > 1e-9 {
@@ -1022,8 +1039,8 @@ fn handle_2d_input(
             let (sx, sy) = match drag.kind {
                 DragHandleKind::Anchor => snap_point_for_drag(wx, wy, editor, &drag),
                 _ => (
-                    snap_10cm(wx).clamp(0.0, editor.plan_width),
-                    snap_10cm(wy).clamp(0.0, editor.plan_height),
+                    snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width),
+                    snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height),
                 ),
             };
 
@@ -1198,8 +1215,8 @@ fn handle_ctrl_left_click(
 
     // 2. Ctrl+Click on a wall line -> insert anchor point ONLY (does not enter building mode)
     if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
-        let sx = snap_10cm(wx).clamp(0.0, editor.plan_width);
-        let sy = snap_10cm(wy).clamp(0.0, editor.plan_height);
+        let sx = snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width);
+        let sy = snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height);
         split_wall_at_point(editor, &wid, sx, sy);
         return;
     }
@@ -1388,8 +1405,8 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                             }
                             ui.separator();
                             if context_menu_item(ui, s.ctx_insert_point, w) {
-                                let sx = snap_10cm(wx).clamp(0.0, editor.plan_width);
-                                let sy = snap_10cm(wy).clamp(0.0, editor.plan_height);
+                                let sx = snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width);
+                                let sy = snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height);
                                 split_wall_at_point(editor, wall_id, sx, sy);
                                 close_menu = true;
                             }
@@ -1701,6 +1718,7 @@ fn draw_rulers_and_cursor_coords(
     max_gy: i32,
     plan_width: f64,
     plan_height: f64,
+    unit_system: UnitSystem,
     pointer_pos: Option<egui::Pos2>,
     screen_to_world: &impl Fn(egui::Pos2) -> (f64, f64),
 ) {
@@ -1708,6 +1726,15 @@ fn draw_rulers_and_cursor_coords(
     let ruler_border = egui::Color32::from_rgb(65, 72, 84);
     let text_color = egui::Color32::from_rgb(185, 192, 204);
     let font = egui::FontId::monospace(10.5);
+
+    let major_step_m = match unit_system {
+        UnitSystem::Metric => 1.0_f64,
+        UnitSystem::Imperial => METERS_PER_FOOT,
+    };
+    let unit_corner = match unit_system {
+        UnitSystem::Metric => "m",
+        UnitSystem::Imperial => "ft",
+    };
 
     let top_ruler = egui::Rect::from_min_max(
         egui::pos2(canvas_rect.left(), full_rect.top()),
@@ -1726,17 +1753,17 @@ fn draw_rulers_and_cursor_coords(
     p.text(
         corner_box.center(),
         egui::Align2::CENTER_CENTER,
-        "m",
+        unit_corner,
         font.clone(),
         text_color,
     );
 
-    let step = if zoom < 22.0 { 2 } else { 1 };
+    let step = if zoom * (major_step_m as f32) < 22.0 { 2 } else { 1 };
     for gx in min_gx..=max_gx {
         if gx % step != 0 {
             continue;
         }
-        let x = origin.x + (gx as f32) * zoom;
+        let x = origin.x + ((gx as f64 * major_step_m) as f32) * zoom;
         if x < top_ruler.left() || x > top_ruler.right() {
             continue;
         }
@@ -1757,7 +1784,7 @@ fn draw_rulers_and_cursor_coords(
         if gy % step != 0 {
             continue;
         }
-        let y = origin.y + (gy as f32) * zoom;
+        let y = origin.y + ((gy as f64 * major_step_m) as f32) * zoom;
         if y < left_ruler.top() || y > left_ruler.bottom() {
             continue;
         }
@@ -1797,9 +1824,18 @@ fn draw_rulers_and_cursor_coords(
         let (wx, wy) = screen_to_world(pos);
         let cx = wx.clamp(0.0, plan_width);
         let cy = wy.clamp(0.0, plan_height);
-        let sx = snap_10cm(cx);
-        let sy = snap_10cm(cy);
-        let label = format!("X: {cx:.2} m   Y: {cy:.2} m   (Snap 10cm: {sx:.2}, {sy:.2})");
+        let sx = snap_grid(cx, unit_system);
+        let sy = snap_grid(cy, unit_system);
+        let disp_x = unit_system.meters_to_display_len(cx);
+        let disp_y = unit_system.meters_to_display_len(cy);
+        let disp_sx = unit_system.meters_to_display_len(sx);
+        let disp_sy = unit_system.meters_to_display_len(sy);
+        let u = unit_system.len_suffix();
+        let snap_label = match unit_system {
+            UnitSystem::Metric => "Snap 10cm",
+            UnitSystem::Imperial => "Snap 3in",
+        };
+        let label = format!("X: {disp_x:.2}{u}   Y: {disp_y:.2}{u}   ({snap_label}: {disp_sx:.2}, {disp_sy:.2})");
         let badge_pos = egui::pos2(canvas_rect.left() + 8.0, canvas_rect.bottom() - 8.0);
         let galley = p.layout_no_wrap(label, font, egui::Color32::WHITE);
         let badge_rect = egui::Rect::from_min_size(
@@ -2030,12 +2066,21 @@ fn draw_project_dialog(ctx: &egui::Context, editor: &mut EditorState) {
     let mut close_dialog = false;
     let mut commit_dialog = false;
 
+    let preset_label = |p: BuildingPreset| -> &'static str {
+        match p {
+            BuildingPreset::GermanyDin => s.preset_de,
+            BuildingPreset::UsaIrc => s.preset_us,
+            BuildingPreset::UkStandard => s.preset_uk,
+            BuildingPreset::Custom => s.preset_custom,
+        }
+    };
+
     egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
-            ui.set_min_width(360.0);
+            ui.set_min_width(420.0);
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.name));
                 ui.text_edit_singleline(&mut dlg.name);
@@ -2054,17 +2099,150 @@ fn draw_project_dialog(ctx: &egui::Context, editor: &mut EditorState) {
                 }
             });
             ui.separator();
+
+            // Country building standard preset
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.dlg_preset));
+                let mut selected_preset = dlg.building_preset;
+                egui::ComboBox::from_id_salt("dlg_building_preset")
+                    .selected_text(preset_label(selected_preset))
+                    .show_ui(ui, |ui| {
+                        for preset in [
+                            BuildingPreset::GermanyDin,
+                            BuildingPreset::UsaIrc,
+                            BuildingPreset::UkStandard,
+                            BuildingPreset::Custom,
+                        ] {
+                            if ui
+                                .selectable_value(&mut selected_preset, preset, preset_label(preset))
+                                .changed()
+                                && selected_preset != BuildingPreset::Custom
+                            {
+                                let (units, thick, height) = selected_preset.defaults();
+                                dlg.unit_system = units;
+                                dlg.wall_thickness = thick;
+                                dlg.wall_height = height;
+                            }
+                        }
+                    });
+                dlg.building_preset = selected_preset;
+            });
+
+            // Unit system selector (Metric / Imperial)
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.dlg_units));
+                ui.selectable_value(&mut dlg.unit_system, UnitSystem::Metric, s.dlg_unit_metric);
+                ui.selectable_value(
+                    &mut dlg.unit_system,
+                    UnitSystem::Imperial,
+                    s.dlg_unit_imperial,
+                );
+            });
+
+            ui.separator();
             ui.label(s.plan_size);
+            let len_suffix = dlg.unit_system.len_suffix();
+            let mut disp_w = dlg.unit_system.meters_to_display_len(dlg.plan_width);
+            let mut disp_h = dlg.unit_system.meters_to_display_len(dlg.plan_height);
+            let (min_plan, max_plan) = match dlg.unit_system {
+                UnitSystem::Metric => (2.0, 200.0),
+                UnitSystem::Imperial => (6.0, 650.0),
+            };
             ui.horizontal(|ui| {
                 ui.label("W:");
-                ui.add(egui::DragValue::new(&mut dlg.plan_width).speed(0.5).range(2.0..=200.0).suffix(" m"));
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut disp_w)
+                            .speed(0.5)
+                            .range(min_plan..=max_plan)
+                            .fixed_decimals(1)
+                            .suffix(len_suffix),
+                    )
+                    .changed()
+                {
+                    dlg.plan_width = dlg.unit_system.display_len_to_meters(disp_w);
+                }
                 ui.label("H:");
-                ui.add(egui::DragValue::new(&mut dlg.plan_height).speed(0.5).range(2.0..=200.0).suffix(" m"));
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut disp_h)
+                            .speed(0.5)
+                            .range(min_plan..=max_plan)
+                            .fixed_decimals(1)
+                            .suffix(len_suffix),
+                    )
+                    .changed()
+                {
+                    dlg.plan_height = dlg.unit_system.display_len_to_meters(disp_h);
+                }
             });
+
             ui.separator();
             ui.label(s.new_wall_defaults);
-            ui.add(egui::Slider::new(&mut dlg.wall_thickness, 0.08..=0.60).text(format!("{} (m)", s.thickness)));
-            ui.add(egui::Slider::new(&mut dlg.wall_height, 1.0..=5.0).text(format!("{} (m)", s.height)));
+
+            // Quick wall thickness chips for the selected building standard
+            let presets_opts = dlg.building_preset.wall_thickness_options();
+            if !presets_opts.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for &(chip_label, meters) in presets_opts {
+                        let active = (dlg.wall_thickness - meters).abs() < 0.004;
+                        if ui.selectable_label(active, chip_label).clicked() {
+                            dlg.wall_thickness = meters;
+                        }
+                    }
+                });
+            }
+
+            // Wall thickness in cm (Metric) or in (Imperial)
+            match dlg.unit_system {
+                UnitSystem::Metric => {
+                    let mut thick_cm = dlg.wall_thickness * 100.0;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut thick_cm, 6.0..=60.0)
+                                .fixed_decimals(1)
+                                .text(format!("{} (cm)", s.thickness)),
+                        )
+                        .changed()
+                    {
+                        dlg.wall_thickness = thick_cm / 100.0;
+                        dlg.building_preset = BuildingPreset::Custom;
+                    }
+                }
+                UnitSystem::Imperial => {
+                    let mut thick_in = UnitSystem::meters_to_inches(dlg.wall_thickness as f64) as f32;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut thick_in, 2.5..=24.0)
+                                .fixed_decimals(1)
+                                .text(format!("{} (in)", s.thickness)),
+                        )
+                        .changed()
+                    {
+                        dlg.wall_thickness = UnitSystem::inches_to_meters(thick_in as f64) as f32;
+                        dlg.building_preset = BuildingPreset::Custom;
+                    }
+                }
+            }
+
+            // Wall height in m (Metric) or ft (Imperial)
+            let mut disp_wh = dlg.unit_system.meters_to_display_len(dlg.wall_height as f64) as f32;
+            let (min_wh, max_wh) = match dlg.unit_system {
+                UnitSystem::Metric => (1.0_f32, 5.0_f32),
+                UnitSystem::Imperial => (3.5_f32, 16.5_f32),
+            };
+            if ui
+                .add(
+                    egui::Slider::new(&mut disp_wh, min_wh..=max_wh)
+                        .fixed_decimals(2)
+                        .text(format!("{} ({})", s.height, len_suffix.trim())),
+                )
+                .changed()
+            {
+                dlg.wall_height = dlg.unit_system.display_len_to_meters(disp_wh as f64) as f32;
+                dlg.building_preset = BuildingPreset::Custom;
+            }
+
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(if dlg.is_new { s.dlg_create } else { s.dlg_apply }).clicked() {
@@ -2083,6 +2261,8 @@ fn draw_project_dialog(ctx: &egui::Context, editor: &mut EditorState) {
         }
         editor.project.name = dlg.name.clone();
         editor.project_path = dlg.path.clone();
+        editor.unit_system = dlg.unit_system;
+        editor.building_preset = dlg.building_preset;
         editor.plan_width = dlg.plan_width;
         editor.plan_height = dlg.plan_height;
         editor.wall_thickness = dlg.wall_thickness;
@@ -2149,19 +2329,49 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             let mut start_h = wall.start_height;
             let mut end_h = wall.end_height;
             let mut props_changed = false;
+            let unit_sys = editor.unit_system;
+            let len_u = unit_sys.len_suffix();
 
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.thickness));
-                props_changed |= ui
-                    .add(egui::DragValue::new(&mut thickness).speed(0.01).range(0.05..=1.0).suffix(" m"))
-                    .changed();
+                match unit_sys {
+                    UnitSystem::Metric => {
+                        let mut thick_cm = thickness * 100.0;
+                        if ui
+                            .add(egui::DragValue::new(&mut thick_cm).speed(0.5).range(5.0..=100.0).fixed_decimals(1).suffix(" cm"))
+                            .changed()
+                        {
+                            thickness = thick_cm / 100.0;
+                            props_changed = true;
+                        }
+                    }
+                    UnitSystem::Imperial => {
+                        let mut thick_in = UnitSystem::meters_to_inches(thickness);
+                        if ui
+                            .add(egui::DragValue::new(&mut thick_in).speed(0.25).range(2.0..=40.0).fixed_decimals(1).suffix(" in"))
+                            .changed()
+                        {
+                            thickness = UnitSystem::inches_to_meters(thick_in);
+                            props_changed = true;
+                        }
+                    }
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.height));
-                props_changed |= ui
-                    .add(egui::DragValue::new(&mut start_h).speed(0.05).range(0.5..=8.0).suffix(" m"))
-                    .changed();
-                end_h = start_h;
+                let mut disp_h = unit_sys.meters_to_display_len(start_h);
+                let (min_h, max_h) = match unit_sys {
+                    UnitSystem::Metric => (0.5_f64, 8.0_f64),
+                    UnitSystem::Imperial => (1.5_f64, 26.0_f64),
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut disp_h).speed(0.1).range(min_h..=max_h).fixed_decimals(2).suffix(len_u))
+                    .changed()
+                {
+                    start_h = unit_sys.display_len_to_meters(disp_h);
+                    end_h = start_h;
+                    props_changed = true;
+                }
             });
 
             if props_changed {
@@ -2293,23 +2503,52 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                 ui.label(format!("{}:", s.object_name));
                 changed |= ui.text_edit_singleline(&mut edited.name).changed();
             });
+            let unit_sys = editor.unit_system;
+            let len_u = unit_sys.len_suffix();
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.opening_width));
-                changed |= ui
-                    .add(egui::DragValue::new(&mut edited.width).speed(0.05).range(0.3..=4.0).suffix(" m"))
-                    .changed();
+                let mut disp_w = unit_sys.meters_to_display_len(edited.width);
+                let (min_w, max_w) = match unit_sys {
+                    UnitSystem::Metric => (0.3_f64, 4.0_f64),
+                    UnitSystem::Imperial => (1.0_f64, 13.0_f64),
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut disp_w).speed(0.05).range(min_w..=max_w).fixed_decimals(2).suffix(len_u))
+                    .changed()
+                {
+                    edited.width = unit_sys.display_len_to_meters(disp_w);
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.height));
-                changed |= ui
-                    .add(egui::DragValue::new(&mut edited.height).speed(0.05).range(0.3..=3.5).suffix(" m"))
-                    .changed();
+                let mut disp_h = unit_sys.meters_to_display_len(edited.height);
+                let (min_h, max_h) = match unit_sys {
+                    UnitSystem::Metric => (0.3_f64, 3.5_f64),
+                    UnitSystem::Imperial => (1.0_f64, 11.5_f64),
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut disp_h).speed(0.05).range(min_h..=max_h).fixed_decimals(2).suffix(len_u))
+                    .changed()
+                {
+                    edited.height = unit_sys.display_len_to_meters(disp_h);
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.opening_elevation));
-                changed |= ui
-                    .add(egui::DragValue::new(&mut edited.elevation).speed(0.05).range(0.0..=2.5).suffix(" m"))
-                    .changed();
+                let mut disp_e = unit_sys.meters_to_display_len(edited.elevation);
+                let max_e = match unit_sys {
+                    UnitSystem::Metric => 2.5_f64,
+                    UnitSystem::Imperial => 8.5_f64,
+                };
+                if ui
+                    .add(egui::DragValue::new(&mut disp_e).speed(0.05).range(0.0..=max_e).fixed_decimals(2).suffix(len_u))
+                    .changed()
+                {
+                    edited.elevation = unit_sys.display_len_to_meters(disp_e);
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.opening_pos));
@@ -2383,7 +2622,9 @@ fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
                     .unwrap_or(default_name);
                 let is_room_sel = editor.selected_room_sig.as_deref() == Some(&sig);
 
-                egui::CollapsingHeader::new(format!("{r_name} ({:.1} m²)", room.area_sqm))
+                let area_disp = editor.unit_system.sqm_to_display_area(room.area_sqm);
+                let area_u = editor.unit_system.area_suffix();
+                egui::CollapsingHeader::new(format!("{r_name} ({area_disp:.1}{area_u})"))
                     .id_salt(format!("tree_room_{sig}"))
                     .default_open(true)
                     .show(ui, |ui| {
@@ -2675,8 +2916,8 @@ fn snap_point_for_draw(wx: f64, wy: f64, editor: &EditorState) -> (f64, f64, boo
         return (ax, ay, true);
     }
     (
-        snap_10cm(wx).clamp(0.0, editor.plan_width),
-        snap_10cm(wy).clamp(0.0, editor.plan_height),
+        snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width),
+        snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height),
         false,
     )
 }
@@ -2709,13 +2950,17 @@ fn snap_point_for_drag(
         }
     }
     (
-        snap_10cm(wx).clamp(0.0, editor.plan_width),
-        snap_10cm(wy).clamp(0.0, editor.plan_height),
+        snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width),
+        snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height),
     )
 }
 
-fn snap_10cm(v: f64) -> f64 {
-    (v * 10.0).round() / 10.0
+fn snap_grid(v: f64, unit_system: UnitSystem) -> f64 {
+    let step = match unit_system {
+        UnitSystem::Metric => 0.1,
+        UnitSystem::Imperial => METERS_PER_FOOT / 4.0, // 3 inches
+    };
+    (v / step).round() * step
 }
 
 fn point_to_segment_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {

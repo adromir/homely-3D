@@ -4,7 +4,10 @@ use crate::i18n::Lang;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use homely_core::command::{CommandHistory, ProjectCommand};
-use homely_core::{builtin_catalog, CatalogItem, Level, PointType, Project, Wall, WallAnchorPoint};
+use homely_core::{
+    builtin_catalog, BuildingPreset, CatalogItem, Level, PointType, Project, UnitSystem, Wall,
+    WallAnchorPoint,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragHandleKind {
@@ -50,6 +53,8 @@ pub struct ProjectDialogState {
     pub is_new: bool,
     pub name: String,
     pub path: String,
+    pub unit_system: UnitSystem,
+    pub building_preset: BuildingPreset,
     pub plan_width: f64,
     pub plan_height: f64,
     pub wall_thickness: f32,
@@ -86,6 +91,8 @@ pub struct EditorState {
     pub context_menu: Option<ContextMenuState>,
     pub wall_thickness: f32,
     pub wall_height: f32,
+    pub unit_system: UnitSystem,
+    pub building_preset: BuildingPreset,
     pub plan_width: f64,
     pub plan_height: f64,
     pub pan_2d: egui::Vec2,
@@ -173,7 +180,9 @@ impl Default for EditorState {
             active_draw_from: None,
             context_menu: None,
             wall_thickness: 0.24,
-            wall_height: 2.6,
+            wall_height: 2.50,
+            unit_system: UnitSystem::Metric,
+            building_preset: BuildingPreset::GermanyDin,
             plan_width: 20.0,
             plan_height: 15.0,
             pan_2d: egui::Vec2::ZERO,
