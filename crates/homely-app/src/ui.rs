@@ -13,7 +13,7 @@ use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use homely_core::command::ProjectCommand;
 use homely_core::geometry::{
     compute_level_wall_offsets, project_point_onto_polyline_t, sample_polyline_at_t,
-    tessellate_wall_centerline,
+    tessellate_anchors, tessellate_wall_centerline,
 };
 use homely_core::rooms::{
     collect_connected_building_walls, detect_rooms, point_in_polygon, room_signature,
@@ -646,18 +646,21 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
     }
 
     // Existing walls (neighbor-aware mitered corners)
-    // Custom polygonal floor zones on active level
+    // Custom poly-Bezier floor zones on active level
     for zone in editor
         .project
         .floor_zones
         .iter()
-        .filter(|z| z.level_id == editor.active_level_id && z.points.len() >= 3)
+        .filter(|z| z.level_id == editor.active_level_id && z.anchors.len() >= 3)
     {
-        let poly: Vec<homely_core::geometry::Vec2> = zone
-            .points
-            .iter()
-            .map(|p| homely_core::geometry::Vec2::new(p[0], p[1]))
-            .collect();
+        let mut poly = tessellate_anchors(&zone.anchors, true, 0.01);
+        if poly.len() > 3 {
+            if let (Some(first), Some(last)) = (poly.first(), poly.last()) {
+                if ((first.x - last.x).powi(2) + (first.y - last.y).powi(2)) < 1e-8 {
+                    poly.pop();
+                }
+            }
+        }
         let is_z_sel = editor.selected_floor_zone_id.as_deref() == Some(&zone.id);
         let zfill = egui::Color32::from_rgba_unmultiplied(
             zone.color[0],
@@ -683,14 +686,31 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         } else {
             egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(220, 220, 220, 140))
         };
-        painter.add(egui::Shape::closed_line(screen_pts.clone(), zstroke));
+        painter.add(egui::Shape::closed_line(screen_pts, zstroke));
         if is_z_sel {
-            for sp in &screen_pts {
-                painter.circle_filled(*sp, 5.0, egui::Color32::from_rgb(100, 200, 255));
+            for a in &zone.anchors {
+                let ap = world_to_screen(a.pos_x, a.pos_y);
+                if let (Some(ix), Some(iy)) = (a.handle_in_x, a.handle_in_y) {
+                    let hp = world_to_screen(ix, iy);
+                    painter.line_segment(
+                        [ap, hp],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 130, 230)),
+                    );
+                    painter.circle_filled(hp, 4.5, egui::Color32::from_rgb(220, 130, 230));
+                }
+                if let (Some(ox), Some(oy)) = (a.handle_out_x, a.handle_out_y) {
+                    let hp = world_to_screen(ox, oy);
+                    painter.line_segment(
+                        [ap, hp],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 130, 230)),
+                    );
+                    painter.circle_filled(hp, 4.5, egui::Color32::from_rgb(220, 130, 230));
+                }
+                painter.circle_filled(ap, 5.0, egui::Color32::from_rgb(100, 200, 255));
             }
         }
-        let cx = poly.iter().map(|p| p.x).sum::<f64>() / poly.len() as f64;
-        let cy = poly.iter().map(|p| p.y).sum::<f64>() / poly.len() as f64;
+        let cx = poly.iter().map(|p| p.x).sum::<f64>() / poly.len().max(1) as f64;
+        let cy = poly.iter().map(|p| p.y).sum::<f64>() / poly.len().max(1) as f64;
         painter.text(
             world_to_screen(cx, cy),
             egui::Align2::CENTER_CENTER,
@@ -1172,7 +1192,7 @@ fn handle_2d_input(
                     editor.selected_floor_zone_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
-                } else if let Some((zid, v_idx)) = editor
+                } else if let Some((zid, v_idx, kind)) = editor
                     .selected_floor_zone_id
                     .as_ref()
                     .and_then(|zid| {
@@ -1182,14 +1202,26 @@ fn handle_2d_input(
                             .iter()
                             .find(|z| z.id == *zid)
                             .and_then(|z| {
-                                z.points.iter().enumerate().find_map(|(i, p)| {
-                                    (world_to_screen(p[0], p[1]).distance(pos) <= 10.0)
-                                        .then(|| (z.id.clone(), i))
-                                })
+                                for (i, a) in z.anchors.iter().enumerate() {
+                                    if let (Some(ix), Some(iy)) = (a.handle_in_x, a.handle_in_y) {
+                                        if world_to_screen(ix, iy).distance(pos) <= 10.0 {
+                                            return Some((z.id.clone(), i, DragHandleKind::HandleIn));
+                                        }
+                                    }
+                                    if let (Some(ox), Some(oy)) = (a.handle_out_x, a.handle_out_y) {
+                                        if world_to_screen(ox, oy).distance(pos) <= 10.0 {
+                                            return Some((z.id.clone(), i, DragHandleKind::HandleOut));
+                                        }
+                                    }
+                                    if world_to_screen(a.pos_x, a.pos_y).distance(pos) <= 10.0 {
+                                        return Some((z.id.clone(), i, DragHandleKind::Anchor));
+                                    }
+                                }
+                                None
                             })
                     })
                 {
-                    editor.dragging_floor_zone_vertex = Some((zid, v_idx));
+                    editor.dragging_floor_zone_handle = Some((zid, v_idx, kind));
                     return;
                 } else if let Some(zid) = editor
                     .project
@@ -1197,14 +1229,10 @@ fn handle_2d_input(
                     .iter()
                     .rev()
                     .find(|z| {
-                        if z.level_id != editor.active_level_id || z.points.len() < 3 {
+                        if z.level_id != editor.active_level_id || z.anchors.len() < 3 {
                             return false;
                         }
-                        let poly: Vec<homely_core::geometry::Vec2> = z
-                            .points
-                            .iter()
-                            .map(|p| homely_core::geometry::Vec2::new(p[0], p[1]))
-                            .collect();
+                        let poly = tessellate_anchors(&z.anchors, true, 0.02);
                         point_in_polygon(homely_core::geometry::Vec2::new(wx, wy), &poly)
                     })
                     .map(|z| z.id.clone())
@@ -1226,22 +1254,54 @@ fn handle_2d_input(
         }
     }
 
-    // Active floor zone vertex drag
-    if let Some((zid, v_idx)) = editor.dragging_floor_zone_vertex.clone() {
+    // Active floor zone anchor / Bezier handle drag
+    if let Some((zid, v_idx, kind)) = editor.dragging_floor_zone_handle.clone() {
         if primary_down {
             if let Some(pos) = pointer_pos {
                 let (wx, wy) = screen_to_world(pos);
-                let (sx, sy, _) = snap_point_for_draw(wx, wy, editor);
+                let sx = snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width);
+                let sy = snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height);
                 if let Some(zone) = editor.project.floor_zones.iter_mut().find(|z| z.id == zid) {
-                    if let Some(pt) = zone.points.get_mut(v_idx) {
-                        *pt = [sx, sy];
+                    if let Some(a) = zone.anchors.get_mut(v_idx) {
+                        match kind {
+                            DragHandleKind::Anchor => {
+                                let dx = sx - a.pos_x;
+                                let dy = sy - a.pos_y;
+                                a.pos_x = sx;
+                                a.pos_y = sy;
+                                if let (Some(ix), Some(iy)) = (a.handle_in_x, a.handle_in_y) {
+                                    a.handle_in_x = Some(ix + dx);
+                                    a.handle_in_y = Some(iy + dy);
+                                }
+                                if let (Some(ox), Some(oy)) = (a.handle_out_x, a.handle_out_y) {
+                                    a.handle_out_x = Some(ox + dx);
+                                    a.handle_out_y = Some(oy + dy);
+                                }
+                            }
+                            DragHandleKind::HandleIn => {
+                                a.handle_in_x = Some(wx);
+                                a.handle_in_y = Some(wy);
+                                if a.point_type == PointType::Smooth {
+                                    a.handle_out_x = Some(2.0 * a.pos_x - wx);
+                                    a.handle_out_y = Some(2.0 * a.pos_y - wy);
+                                }
+                            }
+                            DragHandleKind::HandleOut => {
+                                a.handle_out_x = Some(wx);
+                                a.handle_out_y = Some(wy);
+                                if a.point_type == PointType::Smooth {
+                                    a.handle_in_x = Some(2.0 * a.pos_x - wx);
+                                    a.handle_in_y = Some(2.0 * a.pos_y - wy);
+                                }
+                            }
+                        }
                         editor.dirty_3d = true;
                     }
                 }
             }
             return;
         } else {
-            editor.dragging_floor_zone_vertex = None;
+            editor.dragging_floor_zone_handle = None;
             return;
         }
     }
@@ -1870,11 +1930,18 @@ fn finish_floor_zone_polygon(editor: &mut EditorState) {
     }
     let id = editor.alloc_id("fzone");
     let num = editor.project.floor_zones.len() + 1;
+    let anchors: Vec<WallAnchorPoint> = pts
+        .into_iter()
+        .map(|(x, y)| {
+            let aid = editor.alloc_id("fza");
+            corner(&aid, x, y)
+        })
+        .collect();
     let zone = FloorZone {
         id: id.clone(),
         name: format!("Zone {num}"),
         level_id: editor.active_level_id.clone(),
-        points: pts.into_iter().map(|(x, y)| [x, y]).collect(),
+        anchors,
         texture: SurfaceTexture::Tile,
         color: [215, 212, 205],
     };
@@ -3288,27 +3355,66 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             let u = editor.unit_system;
             let len_u = u.len_suffix();
             let mut remove_idx: Option<usize> = None;
-            let can_remove = zone.points.len() > 3;
-            for (idx, pt) in zone.points.iter_mut().enumerate() {
-                let mut dx = u.meters_to_display_len(pt[0]);
-                let mut dy = u.meters_to_display_len(pt[1]);
+            let mut toggle_curve_idx: Option<usize> = None;
+            let can_remove = zone.anchors.len() > 3;
+            for (idx, a) in zone.anchors.iter_mut().enumerate() {
+                let mut dx = u.meters_to_display_len(a.pos_x);
+                let mut dy = u.meters_to_display_len(a.pos_y);
+                let is_curve = a.point_type != PointType::Corner;
                 ui.horizontal(|ui| {
                     ui.label(format!("#{idx}"));
                     if ui.add(egui::DragValue::new(&mut dx).speed(0.1).fixed_decimals(2).prefix("X:").suffix(len_u)).changed() {
-                        pt[0] = u.display_len_to_meters(dx).clamp(0.0, editor.plan_width);
+                        let nx = u.display_len_to_meters(dx).clamp(0.0, editor.plan_width);
+                        let delta = nx - a.pos_x;
+                        a.pos_x = nx;
+                        if let Some(ref mut ix) = a.handle_in_x { *ix += delta; }
+                        if let Some(ref mut ox) = a.handle_out_x { *ox += delta; }
                         z_changed = true;
                     }
                     if ui.add(egui::DragValue::new(&mut dy).speed(0.1).fixed_decimals(2).prefix("Y:").suffix(len_u)).changed() {
-                        pt[1] = u.display_len_to_meters(dy).clamp(0.0, editor.plan_height);
+                        let ny = u.display_len_to_meters(dy).clamp(0.0, editor.plan_height);
+                        let delta = ny - a.pos_y;
+                        a.pos_y = ny;
+                        if let Some(ref mut iy) = a.handle_in_y { *iy += delta; }
+                        if let Some(ref mut oy) = a.handle_out_y { *oy += delta; }
                         z_changed = true;
+                    }
+                    if ui
+                        .small_button(if is_curve { "⌒" } else { "∟" })
+                        .on_hover_text(if is_curve { s.ctx_to_corner } else { s.ctx_to_curve })
+                        .clicked()
+                    {
+                        toggle_curve_idx = Some(idx);
                     }
                     if can_remove && ui.small_button("×").clicked() {
                         remove_idx = Some(idx);
                     }
                 });
             }
+            if let Some(idx) = toggle_curve_idx {
+                let n = zone.anchors.len();
+                let prev = &zone.anchors[(idx + n - 1) % n];
+                let next = &zone.anchors[(idx + 1) % n];
+                let tx = (next.pos_x - prev.pos_x) * 0.2;
+                let ty = (next.pos_y - prev.pos_y) * 0.2;
+                let a = &mut zone.anchors[idx];
+                if a.point_type == PointType::Corner {
+                    a.point_type = PointType::Smooth;
+                    a.handle_in_x = Some(a.pos_x - tx);
+                    a.handle_in_y = Some(a.pos_y - ty);
+                    a.handle_out_x = Some(a.pos_x + tx);
+                    a.handle_out_y = Some(a.pos_y + ty);
+                } else {
+                    a.point_type = PointType::Corner;
+                    a.handle_in_x = None;
+                    a.handle_in_y = None;
+                    a.handle_out_x = None;
+                    a.handle_out_y = None;
+                }
+                z_changed = true;
+            }
             if let Some(idx) = remove_idx {
-                zone.points.remove(idx);
+                zone.anchors.remove(idx);
                 z_changed = true;
             }
             if z_changed {

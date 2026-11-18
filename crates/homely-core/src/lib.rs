@@ -487,13 +487,13 @@ pub fn sample_terrain_height(settings: &TerrainSettings, x: f64, z: f64) -> f64 
     (n1 * 0.45 + n2) * f64::from(settings.amplitude_m)
 }
 
-/// A polygonal custom floor finish zone (e.g., tiled kitchen area, curved/angled inlay).
+/// A poly-Bezier polygonal custom floor finish zone (supports straight and curved edges).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FloorZone {
     pub id: String,
     pub name: String,
     pub level_id: String,
-    pub points: Vec<[f64; 2]>,
+    pub anchors: Vec<WallAnchorPoint>,
     pub texture: SurfaceTexture,
     pub color: [u8; 3],
 }

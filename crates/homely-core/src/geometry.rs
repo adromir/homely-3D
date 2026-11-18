@@ -56,25 +56,34 @@ impl Vec2 {
 /// `flatness_tolerance` controls the maximum allowed perpendicular deviation (in meters)
 /// of cubic Bezier control points from the chord before subdividing.
 pub fn tessellate_wall_centerline(wall: &Wall, flatness_tolerance: f64) -> Vec<Vec2> {
-    if wall.anchors.is_empty() {
+    tessellate_anchors(&wall.anchors, wall.is_closed_loop, flatness_tolerance)
+}
+
+/// Tessellates any open or closed poly-Bezier anchor chain into a 2D polyline.
+pub fn tessellate_anchors(
+    anchors: &[WallAnchorPoint],
+    is_closed_loop: bool,
+    flatness_tolerance: f64,
+) -> Vec<Vec2> {
+    if anchors.is_empty() {
         return Vec::new();
     }
-    if wall.anchors.len() == 1 {
-        return vec![anchor_pos(&wall.anchors[0])];
+    if anchors.len() == 1 {
+        return vec![anchor_pos(&anchors[0])];
     }
 
     let tol = flatness_tolerance.max(1e-4);
-    let mut points = vec![anchor_pos(&wall.anchors[0])];
+    let mut points = vec![anchor_pos(&anchors[0])];
 
-    let segment_count = if wall.is_closed_loop {
-        wall.anchors.len()
+    let segment_count = if is_closed_loop {
+        anchors.len()
     } else {
-        wall.anchors.len() - 1
+        anchors.len() - 1
     };
 
     for i in 0..segment_count {
-        let a = &wall.anchors[i];
-        let b = &wall.anchors[(i + 1) % wall.anchors.len()];
+        let a = &anchors[i];
+        let b = &anchors[(i + 1) % anchors.len()];
         tessellate_segment(a, b, tol, &mut points);
     }
 

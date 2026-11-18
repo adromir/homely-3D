@@ -10,7 +10,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{PresentMode, WindowCloseRequested, WindowRef, WindowResolution};
 use homely_core::geometry::{
     compute_level_wall_offsets, polyline_length, sample_polyline_at_t, slice_offset_pairs,
-    tessellate_wall_centerline, Vec2 as CoreVec2,
+    tessellate_anchors, tessellate_wall_centerline, Vec2 as CoreVec2,
 };
 use homely_core::rooms::{detect_rooms, point_in_polygon, room_signature, triangulate_polygon};
 use homely_core::{
@@ -350,13 +350,16 @@ fn rebuild_3d_scene(
             }
         }
 
-        // Custom polygonal floor zones rendered slightly above base room floor
+        // Custom poly-Bezier floor zones rendered slightly above base room floor
         for zone in state.project.floor_zones.iter().filter(|z| z.level_id == level.id) {
-            let poly: Vec<CoreVec2> = zone
-                .points
-                .iter()
-                .map(|p| CoreVec2::new(p[0], p[1]))
-                .collect();
+            let mut poly = tessellate_anchors(&zone.anchors, true, 0.02);
+            if poly.len() > 3 {
+                if let (Some(first), Some(last)) = (poly.first(), poly.last()) {
+                    if ((first.x - last.x).powi(2) + (first.y - last.y).powi(2)) < 1e-8 {
+                        poly.pop();
+                    }
+                }
+            }
             let tris = triangulate_polygon(&poly);
             if tris.is_empty() {
                 continue;
