@@ -108,6 +108,7 @@ pub struct Strings {
     pub p3d_nav_zoom: &'static str,
     pub p3d_photo_mode: &'static str,
     pub p3d_exit_photo: &'static str,
+    pub p3d_reset_lighting: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -210,6 +211,7 @@ static DE: Strings = Strings {
     p3d_nav_zoom: "Zoom",
     p3d_photo_mode: "Foto-Modus (H)",
     p3d_exit_photo: "UI einblenden (H)",
+    p3d_reset_lighting: "Sonne & Licht zurücksetzen",
 };
 
 static EN: Strings = Strings {
@@ -305,4 +307,5 @@ static EN: Strings = Strings {
     p3d_nav_zoom: "Zoom",
     p3d_photo_mode: "Photo Mode (H)",
     p3d_exit_photo: "Show UI (H)",
+    p3d_reset_lighting: "Reset Sun & Lighting",
 };

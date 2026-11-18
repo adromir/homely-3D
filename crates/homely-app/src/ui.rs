@@ -2128,6 +2128,14 @@ pub fn draw_preview_3d_overlay(
                     )
                     .changed();
                 env_changed |= ui.checkbox(&mut editor.sun_shadows, s.p3d_shadows).changed();
+                if ui.button(s.p3d_reset_lighting).clicked() {
+                    editor.sky_preset = homely_viewer3d::SkyPreset::ClearDay;
+                    editor.sun_azimuth_deg = 45.0;
+                    editor.sun_elevation_deg = 50.0;
+                    editor.sun_intensity = 16_000.0;
+                    editor.sun_shadows = true;
+                    env_changed = true;
+                }
 
                 if env_changed {
                     editor.env_dirty_3d = true;
