@@ -30,7 +30,6 @@ use std::path::Path;
 pub enum DockTab {
     Floorplan2D,
     Inspector,
-    Preview3D,
     History,
 }
 
@@ -42,11 +41,8 @@ pub struct DockLayout {
 impl Default for DockLayout {
     fn default() -> Self {
         let mut dock = DockState::new(vec![DockTab::Floorplan2D]);
-        dock.main_surface_mut().split_right(
-            NodeIndex::root(),
-            0.70,
-            vec![DockTab::Inspector, DockTab::Preview3D, DockTab::History],
-        );
+        dock.main_surface_mut()
+            .split_right(NodeIndex::root(), 0.70, vec![DockTab::Inspector, DockTab::History]);
         Self { state: dock }
     }
 }
@@ -67,7 +63,6 @@ impl TabViewer for HomelyTabViewer<'_> {
         match tab {
             DockTab::Floorplan2D => s.tab_2d.into(),
             DockTab::Inspector => s.tab_inspector.into(),
-            DockTab::Preview3D => s.tab_preview_3d.into(),
             DockTab::History => s.tab_history.into(),
         }
     }
@@ -76,7 +71,6 @@ impl TabViewer for HomelyTabViewer<'_> {
         match tab {
             DockTab::Floorplan2D => draw_2d_floorplan(ui, self.editor),
             DockTab::Inspector => draw_inspector(ui, self.editor),
-            DockTab::Preview3D => draw_preview_3d_panel(ui, self.editor),
             DockTab::History => draw_history_panel(ui, self.editor),
         }
     }
@@ -2004,102 +1998,123 @@ fn load_project_from(editor: &mut EditorState, path: &str) {
     }
 }
 
-fn draw_preview_3d_panel(ui: &mut egui::Ui, editor: &mut EditorState) {
+/// Draws the floating 3D Preview Controls HUD directly inside the 3D Viewer window.
+pub fn draw_preview_3d_overlay(ctx: &egui::Context, editor: &mut EditorState) {
     let s = tr(editor.lang);
-    ui.heading(s.tab_preview_3d);
-    ui.separator();
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.checkbox(&mut editor.show_3d_viewer, s.menu_toggle_3d);
-        ui.add_space(6.0);
+    egui::Window::new(s.tab_preview_3d)
+        .id(egui::Id::new("viewer3d_controls_hud"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(12.0, 12.0))
+        .resizable(false)
+        .default_open(true)
+        .frame(
+            egui::Frame::window(&ctx.global_style())
+                .fill(egui::Color32::from_rgba_unmultiplied(24, 27, 33, 225)),
+        )
+        .show(ctx, |ui| {
+            ui.set_max_width(275.0);
 
-        ui.label(egui::RichText::new(s.p3d_camera).strong());
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(s.p3d_cam_iso).clicked() {
-                editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Iso);
-            }
-            if ui.button(s.p3d_cam_top).clicked() {
-                editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::TopDown);
-            }
-            if ui.button(s.p3d_cam_front).clicked() {
-                editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Front);
-            }
-            if ui.button(s.p3d_cam_side).clicked() {
-                editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Side);
-            }
-        });
-        if ui.button(s.menu_reset_3d).clicked() {
-            editor.reset_3d_camera = true;
-        }
-
-        ui.separator();
-        ui.label(egui::RichText::new(s.p3d_sky).strong());
-        let sky_label = |p: homely_viewer3d::SkyPreset| -> &'static str {
-            match p {
-                homely_viewer3d::SkyPreset::ClearDay => s.sky_clear,
-                homely_viewer3d::SkyPreset::GoldenHour => s.sky_golden,
-                homely_viewer3d::SkyPreset::Overcast => s.sky_overcast,
-                homely_viewer3d::SkyPreset::Night => s.sky_night,
-            }
-        };
-        let mut env_changed = false;
-        egui::ComboBox::from_id_salt("p3d_sky_preset")
-            .selected_text(sky_label(editor.sky_preset))
-            .show_ui(ui, |ui| {
-                for preset in [
-                    homely_viewer3d::SkyPreset::ClearDay,
-                    homely_viewer3d::SkyPreset::GoldenHour,
-                    homely_viewer3d::SkyPreset::Overcast,
-                    homely_viewer3d::SkyPreset::Night,
-                ] {
-                    if ui
-                        .selectable_value(&mut editor.sky_preset, preset, sky_label(preset))
-                        .changed()
-                    {
-                        if preset == homely_viewer3d::SkyPreset::GoldenHour {
-                            editor.sun_elevation_deg = 12.0;
-                        } else if preset == homely_viewer3d::SkyPreset::ClearDay
-                            && editor.sun_elevation_deg < 20.0
-                        {
-                            editor.sun_elevation_deg = 50.0;
-                        }
-                        env_changed = true;
-                    }
+            ui.label(egui::RichText::new(s.p3d_camera).strong());
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(s.p3d_cam_iso).clicked() {
+                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Iso);
+                }
+                if ui.button(s.p3d_cam_top).clicked() {
+                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::TopDown);
+                }
+                if ui.button(s.p3d_cam_front).clicked() {
+                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Front);
+                }
+                if ui.button(s.p3d_cam_side).clicked() {
+                    editor.camera_preset_3d = Some(homely_viewer3d::CameraPreset::Side);
+                }
+                if ui.button(s.menu_reset_3d).clicked() {
+                    editor.reset_3d_camera = true;
                 }
             });
 
-        ui.separator();
-        ui.label(egui::RichText::new(s.p3d_sun).strong());
-        env_changed |= ui
-            .add(
-                egui::Slider::new(&mut editor.sun_azimuth_deg, 0.0..=360.0)
-                    .suffix("°")
-                    .text(s.p3d_azimuth),
-            )
-            .changed();
-        env_changed |= ui
-            .add(
-                egui::Slider::new(&mut editor.sun_elevation_deg, 2.0..=88.0)
-                    .suffix("°")
-                    .text(s.p3d_elevation),
-            )
-            .changed();
-        env_changed |= ui
-            .add(
-                egui::Slider::new(&mut editor.sun_intensity, 1_000.0..=40_000.0)
-                    .suffix(" lx")
-                    .text(s.p3d_intensity),
-            )
-            .changed();
-        env_changed |= ui.checkbox(&mut editor.sun_shadows, s.p3d_shadows).changed();
+            ui.separator();
+            ui.label(egui::RichText::new(s.p3d_sky).strong());
+            let sky_label = |p: homely_viewer3d::SkyPreset| -> &'static str {
+                match p {
+                    homely_viewer3d::SkyPreset::ClearDay => s.sky_clear,
+                    homely_viewer3d::SkyPreset::GoldenHour => s.sky_golden,
+                    homely_viewer3d::SkyPreset::Overcast => s.sky_overcast,
+                    homely_viewer3d::SkyPreset::Night => s.sky_night,
+                }
+            };
+            let mut env_changed = false;
+            egui::ComboBox::from_id_salt("p3d_sky_preset")
+                .selected_text(sky_label(editor.sky_preset))
+                .show_ui(ui, |ui| {
+                    for preset in [
+                        homely_viewer3d::SkyPreset::ClearDay,
+                        homely_viewer3d::SkyPreset::GoldenHour,
+                        homely_viewer3d::SkyPreset::Overcast,
+                        homely_viewer3d::SkyPreset::Night,
+                    ] {
+                        if ui
+                            .selectable_value(&mut editor.sky_preset, preset, sky_label(preset))
+                            .changed()
+                        {
+                            if preset == homely_viewer3d::SkyPreset::GoldenHour {
+                                editor.sun_elevation_deg = 12.0;
+                            } else if preset == homely_viewer3d::SkyPreset::ClearDay
+                                && editor.sun_elevation_deg < 20.0
+                            {
+                                editor.sun_elevation_deg = 50.0;
+                            }
+                            env_changed = true;
+                        }
+                    }
+                });
 
-        if env_changed {
-            editor.env_dirty_3d = true;
-        }
+            ui.separator();
+            ui.label(egui::RichText::new(s.p3d_sun).strong());
+            env_changed |= ui
+                .add(
+                    egui::Slider::new(&mut editor.sun_azimuth_deg, 0.0..=360.0)
+                        .suffix("°")
+                        .text(s.p3d_azimuth),
+                )
+                .changed();
+            env_changed |= ui
+                .add(
+                    egui::Slider::new(&mut editor.sun_elevation_deg, 2.0..=88.0)
+                        .suffix("°")
+                        .text(s.p3d_elevation),
+                )
+                .changed();
+            env_changed |= ui
+                .add(
+                    egui::Slider::new(&mut editor.sun_intensity, 1_000.0..=40_000.0)
+                        .suffix(" lx")
+                        .text(s.p3d_intensity),
+                )
+                .changed();
+            env_changed |= ui.checkbox(&mut editor.sun_shadows, s.p3d_shadows).changed();
 
-        ui.separator();
-        ui.small(s.p3d_nav_hint);
-    });
+            if env_changed {
+                editor.env_dirty_3d = true;
+            }
+        });
+
+    egui::Area::new(egui::Id::new("viewer3d_nav_hint"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -10.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(18, 20, 25, 195))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(s.p3d_nav_hint)
+                            .small()
+                            .color(egui::Color32::from_rgb(210, 218, 230)),
+                    );
+                });
+        });
 }
 
 fn draw_history_panel(ui: &mut egui::Ui, editor: &mut EditorState) {

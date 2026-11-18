@@ -6,13 +6,20 @@ mod theme;
 mod ui;
 
 use bevy::camera::visibility::RenderLayers;
+use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 use bevy::window::{ExitCondition, WindowCreated};
 use bevy::winit::WINIT_WINDOWS;
-use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext};
-use homely_viewer3d::{Viewer3dPlugin, Viewer3dState};
+use bevy_egui::{
+    EguiContext, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, EguiSchedule,
+    PrimaryEguiContext,
+};
+use homely_viewer3d::{Viewer3dCamera, Viewer3dPlugin, Viewer3dState};
 use state::EditorState;
-use ui::{draw_dock_ui, DockLayout};
+use ui::{draw_dock_ui, draw_preview_3d_overlay, DockLayout};
+
+#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+struct Viewer3dEguiPass;
 
 fn main() {
     App::new()
@@ -30,8 +37,45 @@ fn main() {
         .init_resource::<DockLayout>()
         .add_systems(Startup, setup_2d_ui_camera)
         .add_systems(EguiPrimaryContextPass, draw_dock_ui)
-        .add_systems(Update, (sync_editor_to_viewer3d, apply_window_icons))
+        .add_systems(Viewer3dEguiPass, draw_viewer3d_overlay_ui)
+        .add_systems(
+            Update,
+            (
+                sync_editor_to_viewer3d,
+                attach_egui_to_viewer3d_camera,
+                apply_window_icons,
+            ),
+        )
         .run();
+}
+
+fn attach_egui_to_viewer3d_camera(
+    mut commands: Commands,
+    cams: Query<Entity, (With<Viewer3dCamera>, Without<EguiContext>)>,
+) {
+    for entity in &cams {
+        commands
+            .entity(entity)
+            .insert((EguiContext::default(), EguiSchedule::new(Viewer3dEguiPass)));
+    }
+}
+
+fn draw_viewer3d_overlay_ui(
+    mut contexts: Query<&mut EguiContext, With<Viewer3dCamera>>,
+    mut editor: ResMut<EditorState>,
+    mut viewer: ResMut<Viewer3dState>,
+    mut theme_applied: Local<bool>,
+) {
+    let Ok(mut egui_ctx) = contexts.single_mut() else {
+        return;
+    };
+    let ctx = egui_ctx.get_mut();
+    if !*theme_applied {
+        theme::apply_native_theme(ctx);
+        *theme_applied = true;
+    }
+    draw_preview_3d_overlay(ctx, &mut editor);
+    viewer.ui_wants_pointer = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
 }
 
 fn apply_window_icons(mut created: MessageReader<WindowCreated>) {

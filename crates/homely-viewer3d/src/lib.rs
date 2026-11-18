@@ -63,6 +63,7 @@ pub struct Viewer3dState {
     pub reset_camera: bool,
     pub camera_preset: Option<CameraPreset>,
     pub visible: bool,
+    pub ui_wants_pointer: bool,
     pub sun_azimuth_deg: f32,
     pub sun_elevation_deg: f32,
     pub sun_intensity: f32,
@@ -82,6 +83,7 @@ impl Default for Viewer3dState {
             reset_camera: false,
             camera_preset: None,
             visible: true,
+            ui_wants_pointer: false,
             sun_azimuth_deg: 45.0,
             sun_elevation_deg: 50.0,
             sun_intensity: 16_000.0,
@@ -94,6 +96,10 @@ impl Default for Viewer3dState {
 /// Marker component for the dedicated 3D Viewer OS window.
 #[derive(Component)]
 pub struct Viewer3dWindow;
+
+/// Marker component for the 3D Viewer camera.
+#[derive(Component)]
+pub struct Viewer3dCamera;
 
 /// Marker component for dynamically generated 3D meshes (walls & room floors).
 #[derive(Component)]
@@ -151,6 +157,7 @@ fn setup_3d_viewer(
     };
     let transform = orbit.transform();
     commands.spawn((
+        Viewer3dCamera,
         Camera3d::default(),
         RenderTarget::Window(WindowRef::Entity(viewer_window)),
         transform,
@@ -655,7 +662,7 @@ fn update_3d_camera_and_visibility(
         .single()
         .is_ok_and(|(_, w)| w.visible && w.cursor_position().is_some());
 
-    if cursor_in_3d {
+    if cursor_in_3d && !state.ui_wants_pointer {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         let panning = mouse_buttons.pressed(MouseButton::Middle)
             || (shift && mouse_buttons.pressed(MouseButton::Right));
