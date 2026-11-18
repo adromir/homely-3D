@@ -68,6 +68,7 @@ pub struct BuildingDragState {
     pub start_world: (f64, f64),
     pub applied_dx: f64,
     pub applied_dy: f64,
+    pub click_to_place: bool,
 }
 
 /// Central Bevy resource holding the active project, undo/redo history, and 2D/3D editor state.
@@ -81,6 +82,9 @@ pub struct EditorState {
     pub selected_anchor_index: Option<usize>,
     pub selected_opening_id: Option<String>,
     pub selected_room_sig: Option<String>,
+    pub selection_box: Option<((f64, f64), (f64, f64))>,
+    pub selected_group_wall_ids: Vec<String>,
+    pub selected_group_furniture_ids: Vec<String>,
     pub drag_state: Option<DragAnchorState>,
     pub building_drag: Option<BuildingDragState>,
     pub project_dialog: Option<ProjectDialogState>,
@@ -180,6 +184,9 @@ impl Default for EditorState {
             selected_anchor_index: None,
             selected_opening_id: None,
             selected_room_sig: None,
+            selection_box: None,
+            selected_group_wall_ids: Vec::new(),
+            selected_group_furniture_ids: Vec::new(),
             drag_state: None,
             building_drag: None,
             project_dialog: None,

@@ -588,8 +588,11 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
     let all_pairs = compute_level_wall_offsets(&level_walls, 0.01);
     for (wall, pairs) in level_walls.iter().zip(all_pairs.iter()) {
         let is_selected = editor.selected_wall_id.as_deref() == Some(&wall.id);
+        let is_group_selected = editor.selected_group_wall_ids.contains(&wall.id);
         let fill = if is_selected {
             egui::Color32::from_rgba_unmultiplied(100, 175, 245, 175)
+        } else if is_group_selected {
+            egui::Color32::from_rgba_unmultiplied(90, 200, 255, 195)
         } else {
             egui::Color32::from_rgba_unmultiplied(210, 208, 200, 175)
         };
@@ -785,6 +788,24 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         }
     }
 
+    if let Some((start_w, cur_w)) = editor.selection_box {
+        let rect = egui::Rect::from_two_pos(
+            world_to_screen(start_w.0, start_w.1),
+            world_to_screen(cur_w.0, cur_w.1),
+        );
+        painter.rect_filled(
+            rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(70, 150, 255, 45),
+        );
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 175, 255)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     handle_2d_input(
         ui,
         editor,
@@ -892,10 +913,8 @@ fn handle_2d_input(
             }
             if alt_held {
                 let (wx, wy) = screen_to_world(pos);
-                if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
-                    start_building_drag(editor, &wid, wx, wy);
-                    return;
-                }
+                editor.selection_box = Some(((wx, wy), (wx, wy)));
+                return;
             }
 
             // Standard mode (no modifier): select/drag handle, anchor, or wall
@@ -963,11 +982,48 @@ fn handle_2d_input(
                     editor.selected_anchor_index = None;
                     editor.status = format!("Selected opening {op_id}.");
                 } else if let Some((wid, _)) = find_wall_at_world(wx, wy, editor) {
+                    if editor.selected_group_wall_ids.contains(&wid) {
+                        editor.building_drag = Some(BuildingDragState {
+                            wall_ids: editor.selected_group_wall_ids.clone(),
+                            furniture_ids: editor.selected_group_furniture_ids.clone(),
+                            start_world: (wx, wy),
+                            applied_dx: 0.0,
+                            applied_dy: 0.0,
+                            click_to_place: false,
+                        });
+                        editor.status = format!(
+                            "Moving selected group ({} walls)...",
+                            editor.selected_group_wall_ids.len()
+                        );
+                        return;
+                    }
                     editor.selected_wall_id = Some(wid.clone());
                     editor.selected_anchor_index = None;
                     editor.selected_opening_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
+                } else if let Some(seed_wall_id) = find_room_seed_wall_at_world(wx, wy, editor) {
+                    // Clicking inside a room directly drags the building (or selected group if it contains that wall)
+                    if editor.selected_group_wall_ids.contains(&seed_wall_id) {
+                        editor.building_drag = Some(BuildingDragState {
+                            wall_ids: editor.selected_group_wall_ids.clone(),
+                            furniture_ids: editor.selected_group_furniture_ids.clone(),
+                            start_world: (wx, wy),
+                            applied_dx: 0.0,
+                            applied_dy: 0.0,
+                            click_to_place: false,
+                        });
+                        editor.status = format!(
+                            "Moving selected group ({} walls)...",
+                            editor.selected_group_wall_ids.len()
+                        );
+                    } else {
+                        start_building_drag(editor, &seed_wall_id, wx, wy, false);
+                    }
+                    return;
+                } else {
+                    editor.selected_group_wall_ids.clear();
+                    editor.selected_group_furniture_ids.clear();
                 }
             }
 
@@ -975,9 +1031,72 @@ fn handle_2d_input(
         }
     }
 
-    // Active building move (Alt+Drag or Context Menu -> Move Building)
-    if let Some(mut bdrag) = editor.building_drag.take() {
+    // Active Alt+Drag selection marquee box
+    if let Some((start_w, mut cur_w)) = editor.selection_box.take() {
         if primary_down {
+            if let Some(pos) = pointer_pos {
+                cur_w = screen_to_world(pos);
+            }
+            editor.selection_box = Some((start_w, cur_w));
+            return;
+        } else {
+            let min_x = start_w.0.min(cur_w.0);
+            let max_x = start_w.0.max(cur_w.0);
+            let min_y = start_w.1.min(cur_w.1);
+            let max_y = start_w.1.max(cur_w.1);
+
+            let wall_ids: Vec<String> = editor
+                .project
+                .walls
+                .iter()
+                .filter(|w| {
+                    w.level_id == editor.active_level_id
+                        && w.anchors.iter().any(|a| {
+                            a.pos_x >= min_x
+                                && a.pos_x <= max_x
+                                && a.pos_y >= min_y
+                                && a.pos_y <= max_y
+                        })
+                })
+                .map(|w| w.id.clone())
+                .collect();
+
+            let furniture_ids: Vec<String> = editor
+                .project
+                .furniture
+                .iter()
+                .filter(|f| {
+                    f.level_id == editor.active_level_id
+                        && ((f.transform.pos_x >= min_x
+                            && f.transform.pos_x <= max_x
+                            && f.transform.pos_z >= min_y
+                            && f.transform.pos_z <= max_y)
+                            || f.wall_mount_wall_id
+                                .as_ref()
+                                .is_some_and(|wid| wall_ids.contains(wid)))
+                })
+                .map(|f| f.id.clone())
+                .collect();
+
+            editor.status = format!(
+                "Group selected: {} walls, {} items",
+                wall_ids.len(),
+                furniture_ids.len()
+            );
+            editor.selected_group_wall_ids = wall_ids;
+            editor.selected_group_furniture_ids = furniture_ids;
+            return;
+        }
+    }
+
+    // Active building / group move (direct drag until release, or click-to-place from context menu)
+    if let Some(mut bdrag) = editor.building_drag.take() {
+        let keep_moving = if bdrag.click_to_place {
+            !primary_pressed
+        } else {
+            primary_down
+        };
+        if keep_moving {
             if let Some(pos) = pointer_pos {
                 let (wx, wy) = screen_to_world(pos);
                 let total_dx = snap_grid(wx - bdrag.start_world.0, editor.unit_system);
@@ -1109,7 +1228,39 @@ fn handle_2d_input(
     }
 }
 
-fn start_building_drag(editor: &mut EditorState, seed_wall_id: &str, wx: f64, wy: f64) {
+fn find_room_seed_wall_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<String> {
+    let level_walls: Vec<Wall> = editor
+        .project
+        .walls
+        .iter()
+        .filter(|w| w.level_id == editor.active_level_id)
+        .cloned()
+        .collect();
+    let rooms = detect_rooms(&level_walls, 2.6);
+    let pt = homely_core::geometry::Vec2::new(wx, wy);
+    for room in &rooms {
+        if point_in_polygon(pt, &room.polygon) {
+            for wall in &level_walls {
+                for a in &wall.anchors {
+                    if room.polygon.iter().any(|p| {
+                        ((p.x - a.pos_x).powi(2) + (p.y - a.pos_y).powi(2)).sqrt() < 0.05
+                    }) {
+                        return Some(wall.id.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn start_building_drag(
+    editor: &mut EditorState,
+    seed_wall_id: &str,
+    wx: f64,
+    wy: f64,
+    click_to_place: bool,
+) {
     let level_walls: Vec<Wall> = editor
         .project
         .walls
@@ -1154,6 +1305,7 @@ fn start_building_drag(editor: &mut EditorState, seed_wall_id: &str, wx: f64, wy
         start_world: (wx, wy),
         applied_dx: 0.0,
         applied_dy: 0.0,
+        click_to_place,
     });
 }
 
@@ -1398,7 +1550,7 @@ fn draw_context_menu(ctx: &egui::Context, editor: &mut EditorState) {
                                 close_menu = true;
                             }
                             if context_menu_item(ui, s.ctx_move_building, w) {
-                                start_building_drag(editor, wall_id, wx, wy);
+                                start_building_drag(editor, wall_id, wx, wy, true);
                                 close_menu = true;
                             }
                             if context_menu_item(ui, s.ctx_delete_wall, w) {
