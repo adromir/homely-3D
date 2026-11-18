@@ -119,6 +119,7 @@ pub fn draw_dock_ui(
         }
     } else if esc_key {
         editor.active_draw_from = None;
+        editor.floor_zone_points.clear();
         editor.context_menu = None;
     }
 
@@ -645,17 +646,18 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
     }
 
     // Existing walls (neighbor-aware mitered corners)
-    // Custom floor zones on active level
+    // Custom polygonal floor zones on active level
     for zone in editor
         .project
         .floor_zones
         .iter()
-        .filter(|z| z.level_id == editor.active_level_id)
+        .filter(|z| z.level_id == editor.active_level_id && z.points.len() >= 3)
     {
-        let zrect = egui::Rect::from_two_pos(
-            world_to_screen(zone.min_x, zone.min_y),
-            world_to_screen(zone.max_x, zone.max_y),
-        );
+        let poly: Vec<homely_core::geometry::Vec2> = zone
+            .points
+            .iter()
+            .map(|p| homely_core::geometry::Vec2::new(p[0], p[1]))
+            .collect();
         let is_z_sel = editor.selected_floor_zone_id.as_deref() == Some(&zone.id);
         let zfill = egui::Color32::from_rgba_unmultiplied(
             zone.color[0],
@@ -663,15 +665,34 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
             zone.color[2],
             if is_z_sel { 130 } else { 85 },
         );
+        let tris = triangulate_polygon(&poly);
+        if !tris.is_empty() {
+            let mut mesh = egui::Mesh::default();
+            for p in &poly {
+                mesh.colored_vertex(world_to_screen(p.x, p.y), zfill);
+            }
+            for tri in tris {
+                mesh.add_triangle(tri[0] as u32, tri[1] as u32, tri[2] as u32);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        let screen_pts: Vec<egui::Pos2> =
+            poly.iter().map(|p| world_to_screen(p.x, p.y)).collect();
         let zstroke = if is_z_sel {
             egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255))
         } else {
             egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(220, 220, 220, 140))
         };
-        painter.rect_filled(zrect, 0.0, zfill);
-        painter.rect_stroke(zrect, 0.0, zstroke, egui::StrokeKind::Inside);
+        painter.add(egui::Shape::closed_line(screen_pts.clone(), zstroke));
+        if is_z_sel {
+            for sp in &screen_pts {
+                painter.circle_filled(*sp, 5.0, egui::Color32::from_rgb(100, 200, 255));
+            }
+        }
+        let cx = poly.iter().map(|p| p.x).sum::<f64>() / poly.len() as f64;
+        let cy = poly.iter().map(|p| p.y).sum::<f64>() / poly.len() as f64;
         painter.text(
-            zrect.center(),
+            world_to_screen(cx, cy),
             egui::Align2::CENTER_CENTER,
             &zone.name,
             egui::FontId::proportional(11.0),
@@ -900,22 +921,37 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
         );
     }
 
-    if let Some((start_w, cur_w)) = editor.floor_zone_draw {
-        let rect = egui::Rect::from_two_pos(
-            world_to_screen(start_w.0, start_w.1),
-            world_to_screen(cur_w.0, cur_w.1),
-        );
-        painter.rect_filled(
-            rect,
-            2.0,
-            egui::Color32::from_rgba_unmultiplied(220, 170, 90, 55),
-        );
-        painter.rect_stroke(
-            rect,
-            2.0,
-            egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 185, 95)),
-            egui::StrokeKind::Inside,
-        );
+    if !editor.floor_zone_points.is_empty() {
+        let pts_screen: Vec<egui::Pos2> = editor
+            .floor_zone_points
+            .iter()
+            .map(|&(x, y)| world_to_screen(x, y))
+            .collect();
+        let line_col = egui::Color32::from_rgb(240, 185, 95);
+        for pair in pts_screen.windows(2) {
+            painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, line_col));
+        }
+        for (i, sp) in pts_screen.iter().enumerate() {
+            painter.circle_filled(
+                *sp,
+                if i == 0 { 6.0 } else { 4.5 },
+                if i == 0 {
+                    egui::Color32::LIGHT_GREEN
+                } else {
+                    line_col
+                },
+            );
+        }
+        if let Some(pos) = pointer_pos {
+            let (wx, wy) = screen_to_world(pos);
+            let (sx, sy, _) = snap_point_for_draw(wx, wy, editor);
+            if let Some(&last) = pts_screen.last() {
+                painter.line_segment(
+                    [last, world_to_screen(sx, sy)],
+                    egui::Stroke::new(1.5, line_col),
+                );
+            }
+        }
     }
 
     handle_2d_input(
@@ -964,8 +1000,16 @@ fn handle_2d_input(
         )
     });
 
-    // Right-click exits building mode if active, otherwise opens context menu on point or wall
+    // Right-click exits building/floor-zone drawing if active, otherwise opens context menu on point or wall
     if response.hovered() && secondary_clicked {
+        if !editor.floor_zone_points.is_empty() {
+            if editor.floor_zone_points.len() >= 3 {
+                finish_floor_zone_polygon(editor);
+            } else {
+                editor.floor_zone_points.clear();
+            }
+            return;
+        }
         if editor.active_draw_from.is_some() {
             editor.active_draw_from = None;
             editor.status = "Building finished.".into();
@@ -1030,9 +1074,15 @@ fn handle_2d_input(
             }
             if editor.tool_mode == ToolMode::DrawFloorZone {
                 let (wx, wy) = screen_to_world(pos);
-                let sx = snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width);
-                let sy = snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height);
-                editor.floor_zone_draw = Some(((sx, sy), (sx, sy)));
+                if editor.floor_zone_points.len() >= 3 {
+                    let first = editor.floor_zone_points[0];
+                    if world_to_screen(first.0, first.1).distance(pos) <= 14.0 {
+                        finish_floor_zone_polygon(editor);
+                        return;
+                    }
+                }
+                let (sx, sy, _) = snap_point_for_draw(wx, wy, editor);
+                editor.floor_zone_points.push((sx, sy));
                 return;
             }
 
@@ -1122,17 +1172,40 @@ fn handle_2d_input(
                     editor.selected_floor_zone_id = None;
                     editor.dirty_3d = true;
                     editor.status = format!("Selected {wid}.");
+                } else if let Some((zid, v_idx)) = editor
+                    .selected_floor_zone_id
+                    .as_ref()
+                    .and_then(|zid| {
+                        editor
+                            .project
+                            .floor_zones
+                            .iter()
+                            .find(|z| z.id == *zid)
+                            .and_then(|z| {
+                                z.points.iter().enumerate().find_map(|(i, p)| {
+                                    (world_to_screen(p[0], p[1]).distance(pos) <= 10.0)
+                                        .then(|| (z.id.clone(), i))
+                                })
+                            })
+                    })
+                {
+                    editor.dragging_floor_zone_vertex = Some((zid, v_idx));
+                    return;
                 } else if let Some(zid) = editor
                     .project
                     .floor_zones
                     .iter()
                     .rev()
                     .find(|z| {
-                        z.level_id == editor.active_level_id
-                            && wx >= z.min_x
-                            && wx <= z.max_x
-                            && wy >= z.min_y
-                            && wy <= z.max_y
+                        if z.level_id != editor.active_level_id || z.points.len() < 3 {
+                            return false;
+                        }
+                        let poly: Vec<homely_core::geometry::Vec2> = z
+                            .points
+                            .iter()
+                            .map(|p| homely_core::geometry::Vec2::new(p[0], p[1]))
+                            .collect();
+                        point_in_polygon(homely_core::geometry::Vec2::new(wx, wy), &poly)
                     })
                     .map(|z| z.id.clone())
                 {
@@ -1153,40 +1226,22 @@ fn handle_2d_input(
         }
     }
 
-    // Active floor zone drawing
-    if let Some((start_w, mut cur_w)) = editor.floor_zone_draw.take() {
+    // Active floor zone vertex drag
+    if let Some((zid, v_idx)) = editor.dragging_floor_zone_vertex.clone() {
         if primary_down {
             if let Some(pos) = pointer_pos {
                 let (wx, wy) = screen_to_world(pos);
-                cur_w = (
-                    snap_grid(wx, editor.unit_system).clamp(0.0, editor.plan_width),
-                    snap_grid(wy, editor.unit_system).clamp(0.0, editor.plan_height),
-                );
+                let (sx, sy, _) = snap_point_for_draw(wx, wy, editor);
+                if let Some(zone) = editor.project.floor_zones.iter_mut().find(|z| z.id == zid) {
+                    if let Some(pt) = zone.points.get_mut(v_idx) {
+                        *pt = [sx, sy];
+                        editor.dirty_3d = true;
+                    }
+                }
             }
-            editor.floor_zone_draw = Some((start_w, cur_w));
             return;
         } else {
-            let min_x = start_w.0.min(cur_w.0);
-            let max_x = start_w.0.max(cur_w.0);
-            let min_y = start_w.1.min(cur_w.1);
-            let max_y = start_w.1.max(cur_w.1);
-            if (max_x - min_x) >= 0.2 && (max_y - min_y) >= 0.2 {
-                let id = editor.alloc_id("fzone");
-                let num = editor.project.floor_zones.len() + 1;
-                let zone = FloorZone {
-                    id: id.clone(),
-                    name: format!("Zone {num}"),
-                    level_id: editor.active_level_id.clone(),
-                    min_x,
-                    min_y,
-                    max_x,
-                    max_y,
-                    texture: SurfaceTexture::Tile,
-                    color: [215, 212, 205],
-                };
-                editor.execute_cmd(ProjectCommand::AddFloorZone(zone));
-                editor.selected_floor_zone_id = Some(id);
-            }
+            editor.dragging_floor_zone_vertex = None;
             return;
         }
     }
@@ -1806,6 +1861,25 @@ fn delete_selected_point(editor: &mut EditorState) {
         editor.selected_anchor_index = None;
         editor.status = "Removed point.".into();
     }
+}
+
+fn finish_floor_zone_polygon(editor: &mut EditorState) {
+    let pts = std::mem::take(&mut editor.floor_zone_points);
+    if pts.len() < 3 {
+        return;
+    }
+    let id = editor.alloc_id("fzone");
+    let num = editor.project.floor_zones.len() + 1;
+    let zone = FloorZone {
+        id: id.clone(),
+        name: format!("Zone {num}"),
+        level_id: editor.active_level_id.clone(),
+        points: pts.into_iter().map(|(x, y)| [x, y]).collect(),
+        texture: SurfaceTexture::Tile,
+        color: [215, 212, 205],
+    };
+    editor.execute_cmd(ProjectCommand::AddFloorZone(zone));
+    editor.selected_floor_zone_id = Some(id);
 }
 
 fn find_anchor_at_pos(
@@ -3213,38 +3287,30 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             );
             let u = editor.unit_system;
             let len_u = u.len_suffix();
-            let mut dx = u.meters_to_display_len(zone.min_x);
-            let mut dy = u.meters_to_display_len(zone.min_y);
-            let mut dw = u.meters_to_display_len((zone.max_x - zone.min_x).max(0.2));
-            let mut dh = u.meters_to_display_len((zone.max_y - zone.min_y).max(0.2));
-            ui.horizontal(|ui| {
-                ui.label("X:");
-                if ui.add(egui::DragValue::new(&mut dx).speed(0.1).fixed_decimals(2).suffix(len_u)).changed() {
-                    let w_m = (zone.max_x - zone.min_x).max(0.2);
-                    zone.min_x = u.display_len_to_meters(dx).clamp(0.0, editor.plan_width - 0.2);
-                    zone.max_x = (zone.min_x + w_m).min(editor.plan_width);
-                    z_changed = true;
-                }
-                ui.label("Y:");
-                if ui.add(egui::DragValue::new(&mut dy).speed(0.1).fixed_decimals(2).suffix(len_u)).changed() {
-                    let h_m = (zone.max_y - zone.min_y).max(0.2);
-                    zone.min_y = u.display_len_to_meters(dy).clamp(0.0, editor.plan_height - 0.2);
-                    zone.max_y = (zone.min_y + h_m).min(editor.plan_height);
-                    z_changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("W:");
-                if ui.add(egui::DragValue::new(&mut dw).speed(0.1).range(0.2..=200.0).fixed_decimals(2).suffix(len_u)).changed() {
-                    zone.max_x = (zone.min_x + u.display_len_to_meters(dw)).min(editor.plan_width);
-                    z_changed = true;
-                }
-                ui.label("H:");
-                if ui.add(egui::DragValue::new(&mut dh).speed(0.1).range(0.2..=200.0).fixed_decimals(2).suffix(len_u)).changed() {
-                    zone.max_y = (zone.min_y + u.display_len_to_meters(dh)).min(editor.plan_height);
-                    z_changed = true;
-                }
-            });
+            let mut remove_idx: Option<usize> = None;
+            let can_remove = zone.points.len() > 3;
+            for (idx, pt) in zone.points.iter_mut().enumerate() {
+                let mut dx = u.meters_to_display_len(pt[0]);
+                let mut dy = u.meters_to_display_len(pt[1]);
+                ui.horizontal(|ui| {
+                    ui.label(format!("#{idx}"));
+                    if ui.add(egui::DragValue::new(&mut dx).speed(0.1).fixed_decimals(2).prefix("X:").suffix(len_u)).changed() {
+                        pt[0] = u.display_len_to_meters(dx).clamp(0.0, editor.plan_width);
+                        z_changed = true;
+                    }
+                    if ui.add(egui::DragValue::new(&mut dy).speed(0.1).fixed_decimals(2).prefix("Y:").suffix(len_u)).changed() {
+                        pt[1] = u.display_len_to_meters(dy).clamp(0.0, editor.plan_height);
+                        z_changed = true;
+                    }
+                    if can_remove && ui.small_button("×").clicked() {
+                        remove_idx = Some(idx);
+                    }
+                });
+            }
+            if let Some(idx) = remove_idx {
+                zone.points.remove(idx);
+                z_changed = true;
+            }
             if z_changed {
                 editor.execute_cmd(ProjectCommand::UpdateFloorZone(zone));
             }

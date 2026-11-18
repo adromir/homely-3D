@@ -350,12 +350,17 @@ fn rebuild_3d_scene(
             }
         }
 
-        // Custom floor zones (e.g., tile kitchen island, parquet rug) rendered slightly above base room floor
+        // Custom polygonal floor zones rendered slightly above base room floor
         for zone in state.project.floor_zones.iter().filter(|z| z.level_id == level.id) {
-            let zw = (zone.max_x - zone.min_x).abs().max(0.1) as f32;
-            let zd = (zone.max_y - zone.min_y).abs().max(0.1) as f32;
-            let cx = ((zone.min_x + zone.max_x) * 0.5) as f32;
-            let cz = ((zone.min_y + zone.max_y) * 0.5) as f32;
+            let poly: Vec<CoreVec2> = zone
+                .points
+                .iter()
+                .map(|p| CoreVec2::new(p[0], p[1]))
+                .collect();
+            let tris = triangulate_polygon(&poly);
+            if tris.is_empty() {
+                continue;
+            }
             let zone_finish = SurfaceFinish {
                 texture: zone.texture,
                 secondary_texture: None,
@@ -364,21 +369,34 @@ fn rebuild_3d_scene(
                 secondary_color: zone.color,
                 trim_width_m: 0.12,
             };
-            let zone_mat = create_finish_material(&zone_finish, 2.5, true, &mut images, &mut materials);
-            let mut zmesh = Mesh::from(Plane3d::default().mesh().size(zw, zd));
-            if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
-                zmesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
-            {
-                for uv in uvs.iter_mut() {
-                    uv[0] *= zw * 0.5;
-                    uv[1] *= zd * 0.5;
-                }
+            let zone_mat =
+                create_finish_material(&zone_finish, 2.5, true, &mut images, &mut materials);
+            let positions: Vec<[f32; 3]> = poly
+                .iter()
+                .map(|p| [p.x as f32, level_elev + 0.015, p.y as f32])
+                .collect();
+            let uvs: Vec<[f32; 2]> = poly
+                .iter()
+                .map(|p| [(p.x as f32) * 0.5, (p.y as f32) * 0.5])
+                .collect();
+            let mut indices = Vec::with_capacity(tris.len() * 3);
+            for tri in tris {
+                indices.extend_from_slice(&[tri[0] as u32, tri[2] as u32, tri[1] as u32]);
             }
+            let mut zmesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            zmesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            zmesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+            zmesh.insert_indices(Indices::U32(indices));
+            zmesh.duplicate_vertices();
+            zmesh.compute_flat_normals();
             commands.spawn((
                 SceneMesh3d,
                 Mesh3d(meshes.add(zmesh)),
                 MeshMaterial3d(zone_mat),
-                Transform::from_xyz(cx, level_elev + 0.015, cz),
+                Transform::IDENTITY,
             ));
         }
 
