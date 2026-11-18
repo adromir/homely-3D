@@ -13,6 +13,10 @@ A native, high-performance, open-source 2D/3D room and building planner written 
 
 Homely 3D lets you design floorplans in 2D and explore them synchronously in 3D without external runtime dependencies (no JVM, no WebView). It combines precision CAD geometry (poly-Bezier walls, parametric openings, multi-level buildings) with hardware-accelerated PBR/raytraced rendering, local/cloud AI asset generation, Lua scripting, MCP automation, and Home Assistant integration.
 
+## 📖 Documentation
+
+Full user guide, controls reference, and architecture docs are available in [`docs/index.md`](docs/index.md) (ready for GitHub Pages via `/docs` on `main`).
+
 ## 🚀 Why Use Homely 3D?
 
 - **⚡ Native Performance:** Compiled directly to native machine code using Rust and the Bevy ECS engine—fast startup, low memory footprint, and smooth 60+ FPS viewports.
