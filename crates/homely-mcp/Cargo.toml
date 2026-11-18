@@ -1,0 +1,9 @@
+[package]
+name = "homely-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+homely-core = { path = "../homely-core" }

@@ -1,0 +1,19 @@
+# Project memory & local concept (never commit or push)
+PROJECT_CONTEXT.md
+MEMORY.md
+Concept.md
+Concept.md
+
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# SQLite temporary files
+*.db-wal
+*.db-shm
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/homely-core",
+    "crates/homely-app",
+    "crates/homely-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Adromir <https://github.com/adromir>"]
+license = "MIT"
