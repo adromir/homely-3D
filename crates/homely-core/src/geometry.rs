@@ -486,6 +486,7 @@ mod tests {
     fn straight_wall_footprint() {
         let wall = Wall {
             id: "w1".into(),
+            name: String::new(),
             level_id: "l1".into(),
             is_closed_loop: false,
             thickness: 0.24,
@@ -515,6 +516,7 @@ mod tests {
 
         let wall = Wall {
             id: "w2".into(),
+            name: String::new(),
             level_id: "l1".into(),
             is_closed_loop: false,
             thickness: 0.20,

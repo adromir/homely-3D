@@ -13,7 +13,7 @@ use homely_core::geometry::{
     compute_level_wall_offsets, project_point_onto_polyline_t, sample_polyline_at_t,
     tessellate_wall_centerline,
 };
-use homely_core::rooms::{detect_rooms, triangulate_polygon};
+use homely_core::rooms::{detect_rooms, point_in_polygon, room_signature, triangulate_polygon};
 use homely_core::sh3x::{load_sh3x, save_sh3x};
 use homely_core::{Opening, OpeningType, PointType, Wall, WallAnchorPoint};
 use std::path::Path;
@@ -388,10 +388,22 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
             painter.add(egui::Shape::mesh(mesh));
         }
         let cp = world_to_screen(room.centroid.x, room.centroid.y);
+        let sig = room_signature(&room.polygon);
+        let default_name = match editor.lang {
+            Lang::De => format!("Raum {}", r_idx + 1),
+            Lang::En => format!("Room {}", r_idx + 1),
+        };
+        let r_name = editor
+            .project
+            .room_names
+            .get(&sig)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or(default_name);
         painter.text(
             cp,
             egui::Align2::CENTER_CENTER,
-            format!("Room {}\n{:.2} m²", r_idx + 1, room.area_sqm),
+            format!("{r_name}\n{:.2} m²", room.area_sqm),
             egui::FontId::proportional(12.0),
             egui::Color32::from_rgba_unmultiplied(220, 235, 225, 220),
         );
@@ -497,19 +509,29 @@ fn draw_2d_floorplan(ui: &mut egui::Ui, editor: &mut EditorState) {
 
             match op.opening_type {
                 OpeningType::Door => {
-                    // Door leaf + quarter-circle swing arc
-                    let hinge = world_to_screen(p_a.x, p_a.y);
-                    let swing_tip = world_to_screen(p_a.x + perp.x * op.width, p_a.y + perp.y * op.width);
+                    // Door leaf + quarter-circle swing arc respecting flip_side & flip_hinge
+                    let side = if op.swing_flip_side { -1.0 } else { 1.0 };
+                    let (hinge_pt, closed_dir) = if op.swing_flip_hinge {
+                        (p_b, homely_core::geometry::Vec2::new(-dir.x, -dir.y))
+                    } else {
+                        (p_a, dir)
+                    };
+                    let swing_dir = homely_core::geometry::Vec2::new(perp.x * side, perp.y * side);
+                    let hinge = world_to_screen(hinge_pt.x, hinge_pt.y);
+                    let swing_tip = world_to_screen(
+                        hinge_pt.x + swing_dir.x * op.width,
+                        hinge_pt.y + swing_dir.y * op.width,
+                    );
                     painter.line_segment([hinge, swing_tip], egui::Stroke::new(2.2, accent));
 
                     let mut arc_pts = Vec::with_capacity(13);
                     for step in 0..=12 {
                         let ang = (step as f64 / 12.0) * std::f64::consts::FRAC_PI_2;
-                        let vx = dir.x * ang.cos() + perp.x * ang.sin();
-                        let vy = dir.y * ang.cos() + perp.y * ang.sin();
+                        let vx = closed_dir.x * ang.cos() + swing_dir.x * ang.sin();
+                        let vy = closed_dir.y * ang.cos() + swing_dir.y * ang.sin();
                         arc_pts.push(world_to_screen(
-                            p_a.x + vx * op.width,
-                            p_a.y + vy * op.width,
+                            hinge_pt.x + vx * op.width,
+                            hinge_pt.y + vy * op.width,
                         ));
                     }
                     painter.add(egui::Shape::line(
@@ -905,6 +927,7 @@ fn split_wall_at_point(editor: &mut EditorState, wall_id: &str, sx: f64, sy: f64
 
     let w1 = Wall {
         id: w1_id.clone(),
+        name: w1_id.clone(),
         level_id: wall.level_id.clone(),
         is_closed_loop: false,
         thickness: wall.thickness,
@@ -913,7 +936,8 @@ fn split_wall_at_point(editor: &mut EditorState, wall_id: &str, sx: f64, sy: f64
         anchors: vec![a0, corner(&mid_id1, sx, sy)],
     };
     let w2 = Wall {
-        id: w2_id,
+        id: w2_id.clone(),
+        name: w2_id,
         level_id: wall.level_id,
         is_closed_loop: false,
         thickness: wall.thickness,
@@ -1141,6 +1165,7 @@ fn delete_selected_point(editor: &mut EditorState) {
         let merged_id = editor.alloc_id("wall");
         let merged = Wall {
             id: merged_id.clone(),
+            name: w1.name,
             level_id: w1.level_id,
             is_closed_loop: false,
             thickness: w1.thickness,
@@ -1234,8 +1259,14 @@ fn insert_opening_at(
         OpeningType::Cutout => (1.00, 2.00, 0.0),
     };
     let op_id = editor.alloc_id("op");
+    let default_name = match kind {
+        OpeningType::Door => format!("Door {}", op_id),
+        OpeningType::Window => format!("Window {}", op_id),
+        OpeningType::Cutout => op_id.clone(),
+    };
     let opening = Opening {
         id: op_id.clone(),
+        name: default_name,
         wall_id: wall_id.to_string(),
         opening_type: kind,
         segment_index: 0,
@@ -1244,6 +1275,8 @@ fn insert_opening_at(
         width,
         height,
         depth: wall.thickness,
+        swing_flip_side: false,
+        swing_flip_hinge: false,
         ha_entity_id: None,
     };
     editor.execute_cmd(ProjectCommand::AddOpening(opening));
@@ -1260,12 +1293,25 @@ fn find_opening_at_world(wx: f64, wy: f64, editor: &EditorState) -> Option<Strin
             continue;
         }
         let line = tessellate_wall_centerline(wall, 0.02);
-        let Some((mid, _)) = sample_polyline_at_t(&line, op.segment_t) else {
+        let Some((mid, dir)) = sample_polyline_at_t(&line, op.segment_t) else {
             continue;
         };
-        let d = ((wx - mid.x).powi(2) + (wy - mid.y).powi(2)).sqrt();
-        if d <= (op.width * 0.5).max(0.35) {
+        let d_mid = ((wx - mid.x).powi(2) + (wy - mid.y).powi(2)).sqrt();
+        if d_mid <= (op.width * 0.5).max(0.45) {
             return Some(op.id.clone());
+        }
+        // Also check along the door leaf so clicking an open door blade selects it
+        if op.opening_type == OpeningType::Door {
+            let perp = homely_core::geometry::Vec2::new(-dir.y, dir.x);
+            let side = if op.swing_flip_side { -1.0 } else { 1.0 };
+            let sign_h = if op.swing_flip_hinge { 1.0 } else { -1.0 };
+            let hx = mid.x + dir.x * (op.width * 0.5 * sign_h);
+            let hy = mid.y + dir.y * (op.width * 0.5 * sign_h);
+            let tx = hx + perp.x * side * op.width;
+            let ty = hy + perp.y * side * op.width;
+            if point_to_segment_dist(wx, wy, hx, hy, tx, ty) <= 0.30 {
+                return Some(op.id.clone());
+            }
         }
     }
     None
@@ -1646,28 +1692,44 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
     ui.add(egui::Slider::new(&mut editor.wall_height, 1.0..=5.0).text(format!("{} (m)", s.height)));
 
     ui.separator();
-    ui.heading(s.walls);
-    let mut remove_id: Option<String> = None;
-    for wall in &editor.project.walls {
-        let selected = editor.selected_wall_id.as_deref() == Some(&wall.id);
+    draw_scene_tree(ui, editor);
+
+    if let Some(sig) = editor.selected_room_sig.clone() {
+        let mut r_name = editor
+            .project
+            .room_names
+            .get(&sig)
+            .cloned()
+            .unwrap_or_default();
+        ui.separator();
+        ui.heading("Room");
         ui.horizontal(|ui| {
-            if ui.selectable_label(selected, &wall.id).clicked() {
-                editor.selected_wall_id = Some(wall.id.clone());
-                editor.dirty_3d = true;
-            }
-            if ui.small_button("X").clicked() {
-                remove_id = Some(wall.id.clone());
+            ui.label(format!("{}:", s.object_name));
+            if ui.text_edit_singleline(&mut r_name).changed() {
+                editor.execute_cmd(ProjectCommand::RenameRoom {
+                    signature: sig,
+                    name: r_name,
+                });
             }
         });
-    }
-    if let Some(wall_id) = remove_id {
-        editor.execute_cmd(ProjectCommand::RemoveWall { wall_id });
     }
 
     if let Some(sel_id) = editor.selected_wall_id.clone() {
         if let Some(wall) = editor.project.walls.iter().find(|w| w.id == sel_id).cloned() {
             ui.separator();
-            ui.heading(format!("Edit {}", wall.id));
+            let display = if wall.name.is_empty() { &wall.id } else { &wall.name };
+            ui.heading(display);
+
+            let mut w_name = wall.name.clone();
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.object_name));
+                if ui.text_edit_singleline(&mut w_name).changed() {
+                    editor.execute_cmd(ProjectCommand::RenameWall {
+                        wall_id: wall.id.clone(),
+                        name: w_name,
+                    });
+                }
+            });
 
             let mut thickness = wall.thickness;
             let mut start_h = wall.start_height;
@@ -1781,10 +1843,15 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                 OpeningType::Window => s.opening_window,
                 OpeningType::Cutout => "Cutout",
             };
-            ui.heading(format!("{kind_label} ({})", op.id));
+            let title = if op.name.is_empty() { &op.id } else { &op.name };
+            ui.heading(format!("{kind_label}: {title}"));
 
             let mut edited = op.clone();
             let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(format!("{}:", s.object_name));
+                changed |= ui.text_edit_singleline(&mut edited.name).changed();
+            });
             ui.horizontal(|ui| {
                 ui.label(format!("{}:", s.opening_width));
                 changed |= ui
@@ -1809,6 +1876,18 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
                     .add(egui::DragValue::new(&mut edited.segment_t).speed(0.01).range(0.05..=0.95))
                     .changed();
             });
+            if edited.opening_type == OpeningType::Door {
+                ui.horizontal(|ui| {
+                    if ui.button(s.opening_flip_side).clicked() {
+                        edited.swing_flip_side = !edited.swing_flip_side;
+                        changed = true;
+                    }
+                    if ui.button(s.opening_flip_hinge).clicked() {
+                        edited.swing_flip_hinge = !edited.swing_flip_hinge;
+                        changed = true;
+                    }
+                });
+            }
             if changed {
                 editor.execute_cmd(ProjectCommand::UpdateOpening(edited));
             }
@@ -1817,6 +1896,202 @@ fn draw_inspector(ui: &mut egui::Ui, editor: &mut EditorState) {
             }
         }
     }
+}
+
+fn draw_scene_tree(ui: &mut egui::Ui, editor: &mut EditorState) {
+    let s = tr(editor.lang);
+    ui.heading(s.scene_tree);
+
+    let level_walls: Vec<Wall> = editor
+        .project
+        .walls
+        .iter()
+        .filter(|w| w.level_id == editor.active_level_id)
+        .cloned()
+        .collect();
+    let level_height = editor
+        .project
+        .levels
+        .iter()
+        .find(|l| l.id == editor.active_level_id)
+        .map(|l| l.height)
+        .unwrap_or(2.6);
+    let rooms = detect_rooms(&level_walls, level_height);
+
+    let mut assigned_wall_ids: Vec<String> = Vec::new();
+    let mut remove_wall_id: Option<String> = None;
+
+    egui::ScrollArea::vertical()
+        .id_salt("scene_tree_scroll")
+        .max_height(210.0)
+        .show(ui, |ui| {
+            for (r_idx, room) in rooms.iter().enumerate() {
+                let sig = room_signature(&room.polygon);
+                let default_name = match editor.lang {
+                    Lang::De => format!("Raum {}", r_idx + 1),
+                    Lang::En => format!("Room {}", r_idx + 1),
+                };
+                let r_name = editor
+                    .project
+                    .room_names
+                    .get(&sig)
+                    .filter(|n| !n.is_empty())
+                    .cloned()
+                    .unwrap_or(default_name);
+                let is_room_sel = editor.selected_room_sig.as_deref() == Some(&sig);
+
+                egui::CollapsingHeader::new(format!("{r_name} ({:.1} m²)", room.area_sqm))
+                    .id_salt(format!("tree_room_{sig}"))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if ui.selectable_label(is_room_sel, format!("★ {r_name}")).clicked() {
+                            editor.selected_room_sig = Some(sig.clone());
+                            editor.selected_wall_id = None;
+                            editor.selected_opening_id = None;
+                            editor.selected_anchor_index = None;
+                        }
+
+                        let room_walls: Vec<&Wall> = level_walls
+                            .iter()
+                            .filter(|w| wall_borders_room(w, &room.polygon))
+                            .collect();
+                        for w in &room_walls {
+                            if !assigned_wall_ids.contains(&w.id) {
+                                assigned_wall_ids.push(w.id.clone());
+                            }
+                        }
+
+                        egui::CollapsingHeader::new(format!("{} ({})", s.walls, room_walls.len()))
+                            .id_salt(format!("tree_walls_{sig}"))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for w in &room_walls {
+                                    let sel = editor.selected_wall_id.as_deref() == Some(&w.id);
+                                    let label = if w.name.is_empty() { &w.id } else { &w.name };
+                                    ui.horizontal(|ui| {
+                                        if ui.selectable_label(sel, label).clicked() {
+                                            editor.selected_wall_id = Some(w.id.clone());
+                                            editor.selected_opening_id = None;
+                                            editor.selected_room_sig = None;
+                                            editor.dirty_3d = true;
+                                        }
+                                        if ui.small_button("X").clicked() {
+                                            remove_wall_id = Some(w.id.clone());
+                                        }
+                                    });
+                                }
+                            });
+
+                        let room_openings: Vec<_> = editor
+                            .project
+                            .openings
+                            .iter()
+                            .filter(|o| room_walls.iter().any(|w| w.id == o.wall_id))
+                            .cloned()
+                            .collect();
+                        egui::CollapsingHeader::new(format!("{} ({})", s.openings, room_openings.len()))
+                            .id_salt(format!("tree_openings_{sig}"))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for op in &room_openings {
+                                    let sel = editor.selected_opening_id.as_deref() == Some(&op.id);
+                                    let label = if op.name.is_empty() { &op.id } else { &op.name };
+                                    if ui.selectable_label(sel, label).clicked() {
+                                        editor.selected_opening_id = Some(op.id.clone());
+                                        editor.selected_wall_id = None;
+                                        editor.selected_room_sig = None;
+                                    }
+                                }
+                            });
+
+                        let room_furn: Vec<_> = editor
+                            .project
+                            .furniture
+                            .iter()
+                            .filter(|f| {
+                                f.level_id == editor.active_level_id
+                                    && point_in_polygon(
+                                        homely_core::geometry::Vec2::new(
+                                            f.transform.pos_x,
+                                            f.transform.pos_z,
+                                        ),
+                                        &room.polygon,
+                                    )
+                            })
+                            .collect();
+                        egui::CollapsingHeader::new(format!("{} ({})", s.furniture, room_furn.len()))
+                            .id_salt(format!("tree_furn_{sig}"))
+                            .show(ui, |ui| {
+                                for f in room_furn {
+                                    let label = if f.name.is_empty() { &f.id } else { &f.name };
+                                    ui.label(label);
+                                }
+                            });
+                    });
+            }
+
+            // Unassigned walls & openings (not bordering any closed room yet)
+            let free_walls: Vec<&Wall> = level_walls
+                .iter()
+                .filter(|w| !assigned_wall_ids.contains(&w.id))
+                .collect();
+            let free_openings: Vec<_> = editor
+                .project
+                .openings
+                .iter()
+                .filter(|o| free_walls.iter().any(|w| w.id == o.wall_id))
+                .cloned()
+                .collect();
+
+            if !free_walls.is_empty() || !free_openings.is_empty() {
+                egui::CollapsingHeader::new(s.unassigned)
+                    .id_salt("tree_unassigned")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for w in &free_walls {
+                            let sel = editor.selected_wall_id.as_deref() == Some(&w.id);
+                            let label = if w.name.is_empty() { &w.id } else { &w.name };
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(sel, label).clicked() {
+                                    editor.selected_wall_id = Some(w.id.clone());
+                                    editor.selected_opening_id = None;
+                                    editor.selected_room_sig = None;
+                                    editor.dirty_3d = true;
+                                }
+                                if ui.small_button("X").clicked() {
+                                    remove_wall_id = Some(w.id.clone());
+                                }
+                            });
+                        }
+                        for op in &free_openings {
+                            let sel = editor.selected_opening_id.as_deref() == Some(&op.id);
+                            let label = if op.name.is_empty() { &op.id } else { &op.name };
+                            if ui.selectable_label(sel, label).clicked() {
+                                editor.selected_opening_id = Some(op.id.clone());
+                                editor.selected_wall_id = None;
+                                editor.selected_room_sig = None;
+                            }
+                        }
+                    });
+            }
+        });
+
+    if let Some(wall_id) = remove_wall_id {
+        editor.execute_cmd(ProjectCommand::RemoveWall { wall_id });
+    }
+}
+
+fn wall_borders_room(wall: &Wall, poly: &[homely_core::geometry::Vec2]) -> bool {
+    if wall.anchors.is_empty() || poly.len() < 3 {
+        return false;
+    }
+    let a0 = &wall.anchors[0];
+    let al = &wall.anchors[wall.anchors.len() - 1];
+    let mid_x = (a0.pos_x + al.pos_x) * 0.5;
+    let mid_y = (a0.pos_y + al.pos_y) * 0.5;
+    poly.windows(2).chain(std::iter::once(&[poly[poly.len() - 1], poly[0]][..])).any(|e| {
+        point_to_segment_dist(mid_x, mid_y, e[0].x, e[0].y, e[1].x, e[1].y) < 0.15
+    })
 }
 
 fn draw_navigator_overview(ui: &mut egui::Ui, editor: &mut EditorState) {

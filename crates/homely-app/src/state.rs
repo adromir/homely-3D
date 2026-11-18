@@ -55,6 +55,7 @@ pub struct EditorState {
     pub selected_wall_id: Option<String>,
     pub selected_anchor_index: Option<usize>,
     pub selected_opening_id: Option<String>,
+    pub selected_room_sig: Option<String>,
     pub drag_state: Option<DragAnchorState>,
     /// Active start point when chaining new 2-point walls with `Ctrl + Left-click`.
     pub active_draw_from: Option<(f64, f64)>,
@@ -98,6 +99,7 @@ impl Default for EditorState {
         // Starter L-corner made of two 2-point walls sharing corner (7.0, 2.0)
         let wall1 = Wall {
             id: "wall-1".into(),
+            name: "Wand 1".into(),
             level_id: "lvl-0".into(),
             is_closed_loop: false,
             thickness: 0.24,
@@ -107,6 +109,7 @@ impl Default for EditorState {
         };
         let wall2 = Wall {
             id: "wall-2".into(),
+            name: "Wand 2".into(),
             level_id: "lvl-0".into(),
             is_closed_loop: false,
             thickness: 0.24,
@@ -137,6 +140,7 @@ impl Default for EditorState {
             selected_wall_id: Some("wall-1".into()),
             selected_anchor_index: None,
             selected_opening_id: None,
+            selected_room_sig: None,
             drag_state: None,
             active_draw_from: None,
             context_menu: None,
@@ -182,6 +186,7 @@ impl EditorState {
         self.selected_wall_id = None;
         self.selected_anchor_index = None;
         self.selected_opening_id = None;
+        self.selected_room_sig = None;
         self.drag_state = None;
         self.active_draw_from = None;
         self.context_menu = None;
@@ -256,6 +261,7 @@ impl EditorState {
         let a1 = self.alloc_id("anchor");
         let wall = Wall {
             id: wall_id.clone(),
+            name: wall_id.clone(),
             level_id: self.active_level_id.clone(),
             is_closed_loop: false,
             thickness: f64::from(self.wall_thickness),

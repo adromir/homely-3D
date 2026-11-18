@@ -117,6 +117,42 @@ pub fn detect_rooms(walls: &[Wall], level_height: f64) -> Vec<DetectedRoom> {
     rooms
 }
 
+/// Computes a canonical signature for a detected room polygon so custom names
+/// persist across geometry updates.
+pub fn room_signature(poly: &[Vec2]) -> String {
+    let mut keys: Vec<(i64, i64)> = poly
+        .iter()
+        .map(|p| ((p.x * 100.0).round() as i64, (p.y * 100.0).round() as i64))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter()
+        .map(|(x, y)| format!("{x}:{y}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// Returns `true` if `point` lies inside `poly` (ray-casting).
+pub fn point_in_polygon(point: Vec2, poly: &[Vec2]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut j = n - 1;
+    for i in 0..n {
+        let pi = poly[i];
+        let pj = poly[j];
+        let intersects = ((pi.y > point.y) != (pj.y > point.y))
+            && (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y + 1e-12) + pi.x);
+        if intersects {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Ear-clipping triangulation of a simple 2D polygon into triangle vertex index triples.
 pub fn triangulate_polygon(poly: &[Vec2]) -> Vec<[usize; 3]> {
     let n = poly.len();
@@ -225,6 +261,7 @@ mod tests {
         };
         Wall {
             id: id.into(),
+            name: String::new(),
             level_id: "l1".into(),
             is_closed_loop: false,
             thickness: 0.24,

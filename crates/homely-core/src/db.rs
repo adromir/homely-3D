@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS levels (
 
 CREATE TABLE IF NOT EXISTS walls (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
     level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
     is_closed_loop INTEGER NOT NULL DEFAULT 0,
     thickness REAL NOT NULL DEFAULT 0.24,
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS wall_anchor_points (
 
 CREATE TABLE IF NOT EXISTS openings (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
     wall_id TEXT NOT NULL REFERENCES walls(id) ON DELETE CASCADE,
     opening_type TEXT NOT NULL CHECK(opening_type IN ('door', 'window', 'cutout')),
     segment_index INTEGER NOT NULL DEFAULT 0,
@@ -71,6 +73,8 @@ CREATE TABLE IF NOT EXISTS openings (
     width REAL NOT NULL,
     height REAL NOT NULL,
     depth REAL NOT NULL,
+    swing_flip_side INTEGER NOT NULL DEFAULT 0,
+    swing_flip_hinge INTEGER NOT NULL DEFAULT 0,
     ha_entity_id TEXT
 );
 
@@ -87,6 +91,7 @@ CREATE TABLE IF NOT EXISTS rooms (
 
 CREATE TABLE IF NOT EXISTS furniture_items (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
     level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
     catalog_item_id TEXT NOT NULL,
     asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
@@ -123,6 +128,11 @@ CREATE TABLE IF NOT EXISTS roofs (
     slope_angle REAL NOT NULL DEFAULT 35.0,
     wall_cut_strategy TEXT NOT NULL DEFAULT 'clip'
 );
+
+CREATE TABLE IF NOT EXISTS room_names (
+    signature TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
 "#;
 
 /// Initializes the Homely 3D SQLite schema on `conn`.
@@ -151,7 +161,8 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
     let tx = conn.transaction()?;
 
     tx.execute_batch(
-        "DELETE FROM furniture_items;
+        "DELETE FROM room_names;
+         DELETE FROM furniture_items;
          DELETE FROM openings;
          DELETE FROM wall_anchor_points;
          DELETE FROM walls;
@@ -204,10 +215,11 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
 
     for wall in &project.walls {
         tx.execute(
-            "INSERT INTO walls (id, level_id, is_closed_loop, thickness, start_height, end_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO walls (id, name, level_id, is_closed_loop, thickness, start_height, end_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 wall.id,
+                wall.name,
                 wall.level_id,
                 i32::from(wall.is_closed_loop),
                 wall.thickness,
@@ -239,10 +251,11 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
     for opening in &project.openings {
         tx.execute(
             "INSERT INTO openings
-             (id, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, ha_entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, name, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 opening.id,
+                opening.name,
                 opening.wall_id,
                 opening.opening_type.as_str(),
                 opening.segment_index as i64,
@@ -251,6 +264,8 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
                 opening.width,
                 opening.height,
                 opening.depth,
+                i32::from(opening.swing_flip_side),
+                i32::from(opening.swing_flip_hinge),
                 opening.ha_entity_id
             ],
         )?;
@@ -259,10 +274,11 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
     for item in &project.furniture {
         tx.execute(
             "INSERT INTO furniture_items
-             (id, level_id, catalog_item_id, asset_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, scale_x, scale_y, scale_z, wall_mount_wall_id, ha_binding_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             (id, name, level_id, catalog_item_id, asset_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, scale_x, scale_y, scale_z, wall_mount_wall_id, ha_binding_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 item.id,
+                item.name,
                 item.level_id,
                 item.catalog_item_id,
                 item.asset_id,
@@ -278,6 +294,13 @@ pub fn save_to_conn(project: &Project, conn: &mut Connection) -> Result<(), Core
                 item.wall_mount_wall_id,
                 item.ha_binding_json
             ],
+        )?;
+    }
+
+    for (sig, name) in &project.room_names {
+        tx.execute(
+            "INSERT INTO room_names (signature, name) VALUES (?1, ?2)",
+            params![sig, name],
         )?;
     }
 
@@ -344,7 +367,7 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
     }
 
     let mut wall_stmt = conn.prepare(
-        "SELECT id, level_id, is_closed_loop, thickness, start_height, end_height FROM walls",
+        "SELECT id, name, level_id, is_closed_loop, thickness, start_height, end_height FROM walls",
     )?;
     let mut anchor_stmt = conn.prepare(
         "SELECT id, pos_x, pos_y, handle_in_x, handle_in_y, handle_out_x, handle_out_y, point_type
@@ -355,13 +378,14 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, i32>(2)? != 0,
-            row.get::<_, f64>(3)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i32>(3)? != 0,
             row.get::<_, f64>(4)?,
             row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
         ))
     })? {
-        let (id, level_id, is_closed_loop, thickness, start_height, end_height) = wall_row?;
+        let (id, name, level_id, is_closed_loop, thickness, start_height, end_height) = wall_row?;
         let mut anchors = Vec::new();
         for a_row in anchor_stmt.query_map([&id], |row| {
             Ok((
@@ -389,6 +413,7 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
         }
         project.walls.push(Wall {
             id,
+            name,
             level_id,
             is_closed_loop,
             thickness,
@@ -399,7 +424,7 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, ha_entity_id
+        "SELECT id, name, wall_id, opening_type, segment_index, segment_t, elevation, width, height, depth, swing_flip_side, swing_flip_hinge, ha_entity_id
          FROM openings",
     )?;
     for row in stmt.query_map([], |row| {
@@ -407,19 +432,36 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)? as usize,
-            row.get::<_, f64>(4)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)? as usize,
             row.get::<_, f64>(5)?,
             row.get::<_, f64>(6)?,
             row.get::<_, f64>(7)?,
             row.get::<_, f64>(8)?,
-            row.get::<_, Option<String>>(9)?,
+            row.get::<_, f64>(9)?,
+            row.get::<_, i32>(10)? != 0,
+            row.get::<_, i32>(11)? != 0,
+            row.get::<_, Option<String>>(12)?,
         ))
     })? {
-        let (id, wall_id, type_str, segment_index, segment_t, elevation, width, height, depth, ha) =
-            row?;
+        let (
+            id,
+            name,
+            wall_id,
+            type_str,
+            segment_index,
+            segment_t,
+            elevation,
+            width,
+            height,
+            depth,
+            swing_flip_side,
+            swing_flip_hinge,
+            ha,
+        ) = row?;
         project.openings.push(Opening {
             id,
+            name,
             wall_id,
             opening_type: OpeningType::parse(&type_str)?,
             segment_index,
@@ -428,36 +470,45 @@ pub fn load_from_conn(conn: &Connection) -> Result<Project, CoreError> {
             width,
             height,
             depth,
+            swing_flip_side,
+            swing_flip_hinge,
             ha_entity_id: ha,
         });
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, level_id, catalog_item_id, asset_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, scale_x, scale_y, scale_z, wall_mount_wall_id, ha_binding_json
+        "SELECT id, name, level_id, catalog_item_id, asset_id, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, scale_x, scale_y, scale_z, wall_mount_wall_id, ha_binding_json
          FROM furniture_items",
     )?;
     for row in stmt.query_map([], |row| {
         Ok(FurnitureItem {
             id: row.get(0)?,
-            level_id: row.get(1)?,
-            catalog_item_id: row.get(2)?,
-            asset_id: row.get(3)?,
+            name: row.get(1)?,
+            level_id: row.get(2)?,
+            catalog_item_id: row.get(3)?,
+            asset_id: row.get(4)?,
             transform: Transform3D {
-                pos_x: row.get(4)?,
-                pos_y: row.get(5)?,
-                pos_z: row.get(6)?,
-                rot_x: row.get(7)?,
-                rot_y: row.get(8)?,
-                rot_z: row.get(9)?,
-                scale_x: row.get(10)?,
-                scale_y: row.get(11)?,
-                scale_z: row.get(12)?,
+                pos_x: row.get(5)?,
+                pos_y: row.get(6)?,
+                pos_z: row.get(7)?,
+                rot_x: row.get(8)?,
+                rot_y: row.get(9)?,
+                rot_z: row.get(10)?,
+                scale_x: row.get(11)?,
+                scale_y: row.get(12)?,
+                scale_z: row.get(13)?,
             },
-            wall_mount_wall_id: row.get(13)?,
-            ha_binding_json: row.get(14)?,
+            wall_mount_wall_id: row.get(14)?,
+            ha_binding_json: row.get(15)?,
         })
     })? {
         project.furniture.push(row?);
+    }
+
+    let mut stmt = conn.prepare("SELECT signature, name FROM room_names")?;
+    for row in stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+        let (sig, name) = row?;
+        project.room_names.insert(sig, name);
     }
 
     Ok(project)
@@ -493,6 +544,7 @@ mod tests {
             }],
             walls: vec![Wall {
                 id: "wall-1".into(),
+                name: "Nordwand".into(),
                 level_id: "lvl-0".into(),
                 is_closed_loop: false,
                 thickness: 0.24,
@@ -523,6 +575,7 @@ mod tests {
             }],
             openings: vec![Opening {
                 id: "op-1".into(),
+                name: "Wohnzimmerfenster".into(),
                 wall_id: "wall-1".into(),
                 opening_type: OpeningType::Window,
                 segment_index: 0,
@@ -531,10 +584,13 @@ mod tests {
                 width: 1.2,
                 height: 1.4,
                 depth: 0.24,
+                swing_flip_side: false,
+                swing_flip_hinge: false,
                 ha_entity_id: Some("binary_sensor.living_window".into()),
             }],
             furniture: vec![FurnitureItem {
                 id: "furn-1".into(),
+                name: "Sofa".into(),
                 level_id: "lvl-0".into(),
                 catalog_item_id: "modern_sofa".into(),
                 asset_id: Some("asset-sofa".into()),
@@ -547,6 +603,7 @@ mod tests {
                 wall_mount_wall_id: None,
                 ha_binding_json: None,
             }],
+            room_names: Default::default(),
         };
 
         let mut conn = Connection::open_in_memory().unwrap();

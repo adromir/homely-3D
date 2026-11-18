@@ -13,6 +13,7 @@ pub mod rooms;
 pub mod sh3x;
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// Errors returned by `homely-core` operations.
@@ -174,6 +175,7 @@ impl OpeningType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Opening {
     pub id: String,
+    pub name: String,
     pub wall_id: String,
     pub opening_type: OpeningType,
     pub segment_index: usize,
@@ -182,6 +184,8 @@ pub struct Opening {
     pub width: f64,
     pub height: f64,
     pub depth: f64,
+    pub swing_flip_side: bool,
+    pub swing_flip_hinge: bool,
     pub ha_entity_id: Option<String>,
 }
 
@@ -189,6 +193,7 @@ pub struct Opening {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Wall {
     pub id: String,
+    pub name: String,
     pub level_id: String,
     pub is_closed_loop: bool,
     pub thickness: f64,
@@ -242,6 +247,7 @@ impl Default for Transform3D {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FurnitureItem {
     pub id: String,
+    pub name: String,
     pub level_id: String,
     pub catalog_item_id: String,
     pub asset_id: Option<String>,
@@ -263,4 +269,5 @@ pub struct Project {
     pub walls: Vec<Wall>,
     pub openings: Vec<Opening>,
     pub furniture: Vec<FurnitureItem>,
+    pub room_names: BTreeMap<String, String>,
 }

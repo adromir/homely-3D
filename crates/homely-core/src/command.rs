@@ -35,6 +35,14 @@ pub enum ProjectCommand {
         end_height: f64,
         is_closed_loop: bool,
     },
+    RenameWall {
+        wall_id: String,
+        name: String,
+    },
+    RenameRoom {
+        signature: String,
+        name: String,
+    },
     AddOpening(Opening),
     UpdateOpening(Opening),
     RemoveOpening {
@@ -70,6 +78,8 @@ impl ProjectCommand {
                 anchor_index,
             } => format!("Remove {wall_id} #{anchor_index}"),
             Self::UpdateWallProperties { wall_id, .. } => format!("Edit Wall {wall_id}"),
+            Self::RenameWall { wall_id, name } => format!("Rename {wall_id} -> {name}"),
+            Self::RenameRoom { name, .. } => format!("Rename Room -> {name}"),
             Self::AddOpening(o) => format!("Add Opening {}", o.id),
             Self::UpdateOpening(o) => format!("Edit Opening {}", o.id),
             Self::RemoveOpening { opening_id } => format!("Remove Opening {opening_id}"),
@@ -214,6 +224,37 @@ impl ProjectCommand {
                 wall.end_height = *end_height;
                 wall.is_closed_loop = *is_closed_loop;
                 Ok(prev)
+            }
+            Self::RenameWall { wall_id, name } => {
+                let wall = project
+                    .walls
+                    .iter_mut()
+                    .find(|w| w.id == *wall_id)
+                    .ok_or_else(|| CoreError::NotFound {
+                        kind: "wall",
+                        id: wall_id.clone(),
+                    })?;
+                let prev = std::mem::replace(&mut wall.name, name.clone());
+                Ok(Self::RenameWall {
+                    wall_id: wall_id.clone(),
+                    name: prev,
+                })
+            }
+            Self::RenameRoom { signature, name } => {
+                let prev = project
+                    .room_names
+                    .get(signature)
+                    .cloned()
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    project.room_names.remove(signature);
+                } else {
+                    project.room_names.insert(signature.clone(), name.clone());
+                }
+                Ok(Self::RenameRoom {
+                    signature: signature.clone(),
+                    name: prev,
+                })
             }
             Self::AddOpening(opening) => {
                 ensure_exists(&project.walls, &opening.wall_id, |w| &w.id, "wall")?;
@@ -436,6 +477,7 @@ mod tests {
 
         let wall = Wall {
             id: "w-1".into(),
+            name: "Wand 1".into(),
             level_id: "lvl-1".into(),
             is_closed_loop: false,
             thickness: 0.24,
@@ -486,6 +528,7 @@ mod tests {
 
         let item = FurnitureItem {
             id: "f-1".into(),
+            name: "Sofa".into(),
             level_id: "lvl-1".into(),
             catalog_item_id: "sofa".into(),
             asset_id: None,

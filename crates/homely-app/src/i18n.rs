@@ -66,6 +66,13 @@ pub struct Strings {
     pub opening_width: &'static str,
     pub opening_elevation: &'static str,
     pub opening_pos: &'static str,
+    pub opening_flip_side: &'static str,
+    pub opening_flip_hinge: &'static str,
+    pub scene_tree: &'static str,
+    pub openings: &'static str,
+    pub furniture: &'static str,
+    pub unassigned: &'static str,
+    pub object_name: &'static str,
 }
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -124,8 +131,15 @@ static DE: Strings = Strings {
     opening_door: "Tür",
     opening_window: "Fenster",
     opening_width: "Breite",
-    opening_elevation: "Brüstungshöhe",
+    opening_elevation: "Höhe vom Boden",
     opening_pos: "Position",
+    opening_flip_side: "Öffnungsseite wechseln",
+    opening_flip_hinge: "Anschlag wechseln",
+    scene_tree: "Szenen-Baum",
+    openings: "Öffnungen",
+    furniture: "Mobiliar",
+    unassigned: "Freie Elemente",
+    object_name: "Name",
 };
 
 static EN: Strings = Strings {
@@ -177,6 +191,13 @@ static EN: Strings = Strings {
     opening_door: "Door",
     opening_window: "Window",
     opening_width: "Width",
-    opening_elevation: "Elevation",
+    opening_elevation: "Height from Floor",
     opening_pos: "Position",
+    opening_flip_side: "Flip Opening Side",
+    opening_flip_hinge: "Flip Hinge Side",
+    scene_tree: "Scene Tree",
+    openings: "Openings",
+    furniture: "Furniture",
+    unassigned: "Unassigned",
+    object_name: "Name",
 };
