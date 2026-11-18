@@ -13,3 +13,4 @@ homely-core = { path = "../homely-core" }
 homely-viewer3d = { path = "../homely-viewer3d" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
+winit = { version = "0.30", default-features = false }

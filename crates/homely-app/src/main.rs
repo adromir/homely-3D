@@ -7,7 +7,8 @@ mod ui;
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use bevy::window::ExitCondition;
+use bevy::window::{ExitCondition, WindowCreated};
+use bevy::winit::WINIT_WINDOWS;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext};
 use homely_viewer3d::{Viewer3dPlugin, Viewer3dState};
 use state::EditorState;
@@ -29,8 +30,26 @@ fn main() {
         .init_resource::<DockLayout>()
         .add_systems(Startup, setup_2d_ui_camera)
         .add_systems(EguiPrimaryContextPass, draw_dock_ui)
-        .add_systems(Update, sync_editor_to_viewer3d)
+        .add_systems(Update, (sync_editor_to_viewer3d, apply_window_icons))
         .run();
+}
+
+fn apply_window_icons(mut created: MessageReader<WindowCreated>) {
+    let events: Vec<Entity> = created.read().map(|e| e.window).collect();
+    if events.is_empty() {
+        return;
+    }
+    let (rgba, w, h) = theme::load_logo_rgba();
+    let Ok(icon) = winit::window::Icon::from_rgba(rgba, w, h) else {
+        return;
+    };
+    WINIT_WINDOWS.with_borrow(|winit_windows| {
+        for entity in events {
+            if let Some(win) = winit_windows.get_window(entity) {
+                win.set_window_icon(Some(icon.clone()));
+            }
+        }
+    });
 }
 
 fn setup_2d_ui_camera(

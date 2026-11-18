@@ -87,12 +87,18 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     ds
 }
 
-/// Loads and caches the embedded Homely 3D logo texture in `egui`.
-pub fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+/// Decodes the embedded Homely 3D logo into `(rgba_bytes, width, height)`.
+pub fn load_logo_rgba() -> (Vec<u8>, u32, u32) {
     let img = image::load_from_memory(LOGO_PNG)
         .expect("embedded logo.png must be valid PNG")
         .to_rgba8();
-    let size = [img.width() as usize, img.height() as usize];
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    let (w, h) = img.dimensions();
+    (img.into_raw(), w, h)
+}
+
+/// Loads and caches the embedded Homely 3D logo texture in `egui`.
+pub fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let (rgba, w, h) = load_logo_rgba();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
     ctx.load_texture("homely_logo", color_image, egui::TextureOptions::LINEAR)
 }
